@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+librosa==0.10.1
+numpy
+scikit-learn
+joblib
+pandas
+python-multipart
+soundfile
+sounddevice
+pyaudio
+python-osc

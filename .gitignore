@@ -1,0 +1,18 @@
+# Claude Code personal session data
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Uploaded audio files (runtime data, not source)
+backend/uploads/
+
+# OS
+.DS_Store
+Thumbs.db

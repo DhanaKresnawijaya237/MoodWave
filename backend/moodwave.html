@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoodWave — Music Mood Visualizer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #080a0f;
+    --bg2: #0e1118;
+    --bg3: #141820;
+    --border: rgba(255,255,255,0.07);
+    --text: #e8eaf2;
+    --muted: #555a6e;
+    --accent: #7c6bfa;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+
+    --mood-energetic: #f5a623;
+    --mood-happy: #f7e248;
+    --mood-calm: #4ecdc4;
+    --mood-romantic: #ff6b8a;
+    --mood-sad: #6b8cfa;
+    --mood-angry: #ff4d4d;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-weight: 300;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* --- Layout --- */
+  .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: rgba(8,10,15,0.9);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .logo-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+  }
+  .logo-dot.active { background: #4ecdc4; animation: pulse-dot 0.6s ease-in-out infinite; }
+
+  .status-pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    text-transform: uppercase;
+    transition: all 0.4s;
+  }
+  .status-pill.analyzing { border-color: #4ecdc4; color: #4ecdc4; }
+  .status-pill.done { border-color: var(--accent); color: var(--accent); }
+
+  /* --- Main content --- */
+  .content {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    grid-template-rows: 1fr;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* --- Canvas area --- */
+  .canvas-area {
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  canvas#moodCanvas {
+    width: 100%; height: 100%;
+    display: block;
+  }
+
+  /* --- TD video feed panel --- */
+  .td-panel {
+    grid-row: 1;
+    grid-column: 1;
+    background: #000;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .td-panel img#tdFeed {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .td-offline {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    position: absolute; inset: 0; justify-content: center; pointer-events: none;
+  }
+  .td-offline-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .td-offline-text {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+    color: var(--muted); text-transform: uppercase; text-align: center;
+    max-width: 360px; line-height: 1.6;
+  }
+  .td-label {
+    position: absolute; top: 8px; left: 12px;
+    font-family: var(--mono); font-size: 8px; letter-spacing: 0.14em;
+    color: rgba(255,255,255,0.18); text-transform: uppercase;
+    pointer-events: none; z-index: 2;
+  }
+  .td-live-dot {
+    position: absolute; top: 10px; right: 12px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--muted); z-index: 2; transition: background 0.4s;
+  }
+  .td-live-dot.live {
+    background: #4ecdc4;
+    animation: blink-dot 1.4s ease-in-out infinite;
+  }
+  @keyframes blink-dot { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+  /* --- Audio player bar --- */
+  .audio-bar {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 44px;
+    background: rgba(8,10,15,0.92); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: 0 14px;
+    z-index: 4; backdrop-filter: blur(6px);
+  }
+  .audio-play-btn {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 1px solid var(--border); background: transparent;
+    color: var(--text); cursor: pointer; font-size: 10px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .audio-play-btn:hover { border-color: var(--accent); background: rgba(124,107,250,0.1); }
+  .audio-progress-wrap {
+    flex: 1; height: 3px; background: var(--border); border-radius: 2px;
+    cursor: pointer; position: relative;
+  }
+  .audio-progress-fill {
+    height: 100%; background: var(--accent); border-radius: 2px;
+    width: 0%; transition: width 0.1s linear; pointer-events: none;
+  }
+  .audio-time {
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
+    letter-spacing: 0.06em; min-width: 80px; text-align: right; flex-shrink: 0;
+  }
+  .audio-filename {
+    font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.3);
+    letter-spacing: 0.06em; max-width: 180px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
+  }
+
+  /* Upload overlay */
+  .upload-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px;
+    background: var(--bg);
+    z-index: 5;
+    transition: opacity 0.5s, pointer-events 0.5s;
+  }
+  .upload-overlay.hidden { opacity: 0; pointer-events: none; }
+
+  .drop-zone {
+    width: 280px; height: 180px;
+    border: 1px dashed rgba(124,107,250,0.4);
+    border-radius: 16px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: border-color 0.3s, background 0.3s;
+    background: rgba(124,107,250,0.03);
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(124,107,250,0.08);
+  }
+  .drop-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(124,107,250,0.12);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .drop-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    text-align: center;
+  }
+  .drop-label span { color: var(--accent); }
+
+  .upload-hint {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    text-transform: uppercase;
+    opacity: 0.6;
+  }
+
+  input#fileInput { display: none; }
+
+  /* Mood label on canvas */
+  .canvas-label {
+    position: absolute;
+    bottom: 20px; left: 20px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: rgba(255,255,255,0.25);
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .va-readout {
+    position: absolute;
+    top: 18px; left: 20px;
+    display: flex; gap: 18px;
+    pointer-events: none;
+  }
+  .va-val {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: rgba(255,255,255,0.3);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .va-val .num {
+    font-size: 22px;
+    font-weight: 700;
+    color: rgba(255,255,255,0.75);
+    line-height: 1;
+    transition: color 0.6s;
+  }
+
+  /* --- Sidebar --- */
+  .sidebar {
+    border-left: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    grid-row: 1 / 3;
+    grid-column: 2;
+  }
+
+  .sidebar-section {
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  /* Dominant mood display */
+  .dominant-mood {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .mood-swatch {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0;
+    transition: background 0.8s;
+  }
+  .mood-name {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    transition: color 0.8s;
+    line-height: 1;
+  }
+  .mood-confidence {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* Mood bars */
+  .mood-bars { display: flex; flex-direction: column; gap: 8px; }
+  .mood-bar-row {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .mood-bar-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    width: 62px;
+    flex-shrink: 0;
+  }
+  .mood-bar-track {
+    flex: 1; height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .mood-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    width: 0%;
+  }
+  .mood-bar-pct {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    width: 28px;
+    text-align: right;
+  }
+
+  /* Features */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+  .feature-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 10px 8px;
+  }
+  .feature-card .f-label {
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .feature-card .f-val {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    transition: color 0.6s;
+  }
+
+  /* Chunk timeline */
+  .timeline-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .timeline-scroll::-webkit-scrollbar { width: 3px; }
+  .timeline-scroll::-webkit-scrollbar-track { background: transparent; }
+  .timeline-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .chunk-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: opacity 0.3s;
+    opacity: 0.5;
+  }
+  .chunk-item.active { opacity: 1; }
+  .chunk-item:hover { opacity: 0.85; }
+  .chunk-time {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    width: 36px;
+    flex-shrink: 0;
+  }
+  .chunk-mood-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    flex-shrink: 0;
+    transition: background 0.4s;
+  }
+  .chunk-mood-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    flex: 1;
+  }
+  .chunk-va {
+    font-family: var(--mono);
+    font-size: 8px;
+    color: var(--muted);
+  }
+
+  /* Controls */
+  .controls {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 10px;
+    align-items: center;
+  }
+  .btn {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn:hover { border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
+  .btn.primary {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn.primary:hover { background: rgba(124,107,250,0.1); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Loading bar */
+  .progress-bar {
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), #4ecdc4);
+    border-radius: 1px;
+    width: 0%;
+    transition: width 0.4s;
+  }
+
+  /* Valence-Arousal 2D plot */
+  .va-plot-wrap {
+    padding: 0 20px 20px;
+  }
+  .va-plot {
+    width: 100%;
+    aspect-ratio: 1;
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg3);
+    overflow: hidden;
+  }
+  .va-plot canvas {
+    width: 100%; height: 100%; display: block;
+  }
+  .va-axis-x, .va-axis-y {
+    position: absolute;
+    font-family: var(--mono);
+    font-size: 8px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+  }
+  .va-axis-x { bottom: 4px; right: 6px; }
+  .va-axis-y { top: 4px; left: 6px; }
+
+  /* Error toast */
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #2a1010; border: 1px solid #ff4d4d;
+    color: #ff8a8a; border-radius: 8px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+    padding: 10px 18px; z-index: 100;
+    opacity: 0; pointer-events: none; transition: opacity 0.3s;
+  }
+  .toast.show { opacity: 1; }
+
+  /* Animated background particles on canvas */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .va-readout, .canvas-label { animation: fadeInUp 0.6s ease both; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">
+      <div class="logo-dot" id="logoDot"></div>
+      MOODWAVE
+    </div>
+    <div id="statusPill" class="status-pill">idle</div>
+  </header>
+
+  <div class="content">
+
+    <!-- TD Video Feed Panel (full left column) -->
+    <div class="td-panel" id="tdPanel">
+      <!-- Upload overlay lives here now -->
+      <div class="upload-overlay" id="uploadOverlay">
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-icon">♪</div>
+          <div class="drop-label">
+            Drop an audio file here<br>or <span>click to browse</span>
+          </div>
+        </div>
+        <div class="upload-hint">mp3 · wav · ogg · flac</div>
+        <input type="file" id="fileInput" accept="audio/*">
+      </div>
+      <div class="td-label">TouchDesigner output</div>
+      <div class="td-live-dot" id="tdLiveDot"></div>
+      <img id="tdFeed" style="display:none" alt="TD feed">
+      <div class="td-offline" id="tdOffline">
+        <div class="td-offline-dot"></div>
+        <div class="td-offline-text">Waiting for TD · run td_mjpeg_server.py in TouchDesigner</div>
+      </div>
+      <!-- Audio player bar -->
+      <div class="audio-bar" id="audioBar" style="display:none">
+        <button class="audio-play-btn" id="playBtn" onclick="togglePlay()">▶</button>
+        <div class="audio-filename" id="audioFilename">—</div>
+        <div class="audio-progress-wrap" id="progressWrap">
+          <div class="audio-progress-fill" id="audioProgressFill"></div>
+        </div>
+        <div class="audio-time" id="audioTime">0:00 / 0:00</div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <!-- Dominant mood -->
+      <div class="sidebar-section">
+        <div class="section-label">Dominant Mood</div>
+        <div class="dominant-mood">
+          <div class="mood-swatch" id="moodSwatch" style="background:var(--muted)"></div>
+          <div class="mood-name" id="moodName" style="color:var(--muted)">—</div>
+        </div>
+        <div class="mood-confidence" id="moodConf">Waiting for audio...</div>
+      </div>
+
+      <!-- Mood distribution bars -->
+      <div class="sidebar-section">
+        <div class="section-label">Mood Distribution</div>
+        <div class="mood-bars" id="moodBars">
+          <!-- injected by JS -->
+        </div>
+      </div>
+
+      <!-- Features -->
+      <div class="sidebar-section">
+        <div class="section-label">Audio Features</div>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="f-label">Tempo</div>
+            <div class="f-val" id="fTempo">—</div>
+          </div>
+          <div class="feature-card">
+            <div class="f-label">Energy</div>
+            <div class="f-val" id="fEnergy">—</div>
+          </div>
+          <div class="feature-card">
+            <div class="f-label">Bright.</div>
+            <div class="f-val" id="fBright">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- V-A plot -->
+      <div class="va-plot-wrap">
+        <div class="section-label">Valence / Arousal Space</div>
+        <div class="va-plot">
+          <canvas id="vaPlot"></canvas>
+          <div class="va-axis-x">valence →</div>
+          <div class="va-axis-y">↑ arousal</div>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="section-label" style="padding: 16px 20px 0; flex-shrink:0">Chunks</div>
+      <div class="timeline-scroll" id="timeline"></div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <button class="btn primary" id="btnLoad" onclick="document.getElementById('fileInput').click()">Load File</button>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <button class="btn" id="btnReset" onclick="resetApp()" style="display:none">Reset</button>
+      </div>
+    </aside>
+
+    <!-- Hidden elements kept for JS compatibility -->
+    <div style="display:none">
+      <canvas id="moodCanvas"></canvas>
+      <div id="vaReadout">
+        <span id="valenceNum"></span>
+        <span id="arousalNum"></span>
+      </div>
+      <div id="canvasLabel"></div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// =============================================
+// Config
+// =============================================
+const API_BASE = 'http://localhost:8000';
+
+const MOOD_COLORS = {
+  energetic: '#f5a623',
+  happy:     '#f7e248',
+  calm:      '#4ecdc4',
+  romantic:  '#ff6b8a',
+  sad:       '#6b8cfa',
+  angry:     '#ff4d4d',
+};
+
+const MOOD_CENTERS_CANVAS = {
+  // VA -> normalized 0-1 for 2D plot
+  energetic: [0.85, 0.15],
+  happy:     [0.75, 0.35],
+  calm:      [0.70, 0.70],
+  romantic:  [0.75, 0.75],
+  sad:       [0.20, 0.75],
+  angry:     [0.20, 0.15],
+};
+
+// =============================================
+// State
+// =============================================
+let chunks = [];
+let currentChunkIndex = -1;
+let animFrame = null;
+let particles = [];
+let shapes = [];
+let bgHue = 230;
+let targetHue = 230;
+let bgSaturation = 15;
+let targetSaturation = 15;
+let bgLightness = 5;
+let targetLightness = 5;
+let isAnalyzing = false;
+
+// =============================================
+// Canvas setup
+// =============================================
+const canvas = document.getElementById('moodCanvas');
+const ctx = canvas.getContext('2d');
+const vaCanvas = document.getElementById('vaPlot');
+const vaCtx = vaCanvas.getContext('2d');
+
+function resizeCanvas() {
+  const parent = canvas.parentElement;
+  canvas.width = parent.clientWidth;
+  canvas.height = parent.clientHeight;
+
+  const vaWrap = vaCanvas.parentElement;
+  vaCanvas.width = vaWrap.clientWidth;
+  vaCanvas.height = vaWrap.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// =============================================
+// File upload
+// =============================================
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+async function handleFile(file) {
+  resetApp(false);
+  isAnalyzing = true;
+
+  document.getElementById('uploadOverlay').classList.add('hidden');
+  document.getElementById('btnReset').style.display = 'block';
+  document.getElementById('logoDot').classList.add('active');
+  setStatus('analyzing');
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const response = await fetch(`${API_BASE}/analyze-stream`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let totalChunks = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = JSON.parse(line.slice(6));
+
+        if (data.done) {
+          isAnalyzing = false;
+          setStatus('done');
+          document.getElementById('logoDot').classList.remove('active');
+          document.getElementById('progressFill').style.width = '100%';
+          // All chunks processed — show player and start TD playback
+          setupAudio(file);
+          break;
+        }
+
+        totalChunks = data.total_duration ? Math.ceil(data.total_duration / 10) : totalChunks + 1;
+        const pct = Math.min(100, Math.round(((data.chunk + 1) / totalChunks) * 100));
+        document.getElementById('progressFill').style.width = pct + '%';
+
+        processChunk(data);
+        // Send chunk mood data to TD as it's processed so TD can store it
+        const chunkRef = chunks[chunks.length - 1];
+        if (chunkRef) window.sendToOscBridge?.(chunkRef);
+      }
+    }
+  } catch (err) {
+    isAnalyzing = false;
+    document.getElementById('logoDot').classList.remove('active');
+    setStatus('idle');
+    showToast(err.message.includes('fetch') ? 'Cannot connect to backend (localhost:8000). Is the server running?' : err.message);
+  }
+}
+
+// =============================================
+// Process each chunk from SSE
+// =============================================
+function processChunk(data) {
+  const dominant = Object.entries(data.mood).sort((a,b) => b[1]-a[1])[0][0];
+  const chunk = {
+    index: data.chunk,
+    timeStart: data.time_start,
+    timeEnd: data.time_end,
+    valence: data.valence,
+    arousal: data.arousal,
+    mood: data.mood,
+    dominant,
+    features: data.features,
+  };
+
+  chunks.push(chunk);
+  currentChunkIndex = chunks.length - 1;
+
+  updateSidebar(chunk);
+  addTimelineItem(chunk);
+  spawnShapesForMood(chunk);
+  updateVAPlot(chunk.valence, chunk.arousal, dominant);
+  updateBackground(chunk);
+}
+
+// =============================================
+// Background mood field
+// =============================================
+function updateBackground(chunk) {
+  const moodHues = {
+    energetic: 35, happy: 55, calm: 180, romantic: 340, sad: 230, angry: 0
+  };
+  const moodSat = {
+    energetic: 60, happy: 70, calm: 50, romantic: 55, sad: 40, angry: 65
+  };
+  targetHue = moodHues[chunk.dominant] ?? 230;
+  targetSaturation = moodSat[chunk.dominant] ?? 20;
+  targetLightness = 10 + (Math.abs(chunk.arousal) + Math.abs(chunk.valence)) * 6;
+}
+
+// =============================================
+// Particle / shape system
+// =============================================
+function spawnShapesForMood(chunk) {
+  const { valence, arousal, dominant, features } = chunk;
+  const color = MOOD_COLORS[dominant] || '#888';
+  const count = 6 + Math.round(Math.abs(arousal) * 10);
+  const energy = features?.energy ?? 0.05;
+  const tempo = features?.tempo ?? 120;
+
+  for (let i = 0; i < count; i++) {
+    const speed = 0.2 + Math.abs(arousal) * 1.5 + Math.random() * 0.8;
+    const size = 20 + Math.random() * 80 * (0.5 + energy * 10);
+    const shapeType = pickShapeForMood(dominant);
+
+    shapes.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      vx: (Math.random() - 0.5) * speed,
+      vy: (Math.random() - 0.5) * speed,
+      size,
+      targetSize: size,
+      color,
+      alpha: 0,
+      targetAlpha: 0.12 + Math.random() * 0.18,
+      type: shapeType,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.008 * (arousal > 0 ? 1 : 0.2),
+      life: 1,
+      decay: 0.0008 + Math.random() * 0.0012,
+      valence,
+      arousal,
+    });
+  }
+
+  // Trim old shapes
+  if (shapes.length > 120) shapes.splice(0, shapes.length - 120);
+}
+
+function pickShapeForMood(mood) {
+  const map = {
+    energetic: ['triangle', 'jagged', 'circle'],
+    happy:     ['circle', 'blob', 'star'],
+    calm:      ['circle', 'blob', 'wave'],
+    romantic:  ['heart', 'blob', 'circle'],
+    sad:       ['drop', 'circle', 'wave'],
+    angry:     ['jagged', 'triangle', 'triangle'],
+  };
+  const types = map[mood] || ['circle'];
+  return types[Math.floor(Math.random() * types.length)];
+}
+
+// =============================================
+// Draw loop
+// =============================================
+function drawLoop() {
+  animFrame = requestAnimationFrame(drawLoop);
+
+  // Lerp background
+  bgHue += (targetHue - bgHue) * 0.03;
+  bgSaturation += (targetSaturation - bgSaturation) * 0.03;
+  bgLightness += (targetLightness - bgLightness) * 0.03;
+
+  // Dark bg with trail
+  ctx.fillStyle = `hsla(${bgHue}, ${bgSaturation}%, ${bgLightness}%, 0.18)`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw shapes
+  for (let i = shapes.length - 1; i >= 0; i--) {
+    const s = shapes[i];
+    s.x += s.vx;
+    s.y += s.vy;
+    s.rotation += s.rotSpeed;
+    s.life -= s.decay;
+    s.alpha += (s.targetAlpha * s.life - s.alpha) * 0.04;
+
+    if (s.life <= 0) { shapes.splice(i, 1); continue; }
+
+    // Wrap edges
+    if (s.x < -s.size) s.x = canvas.width + s.size;
+    if (s.x > canvas.width + s.size) s.x = -s.size;
+    if (s.y < -s.size) s.y = canvas.height + s.size;
+    if (s.y > canvas.height + s.size) s.y = -s.size;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, s.alpha);
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rotation);
+    drawShape(ctx, s);
+    ctx.restore();
+  }
+}
+
+function drawShape(ctx, s) {
+  const { type, size, color } = s;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1;
+
+  switch (type) {
+    case 'circle':
+      ctx.beginPath();
+      ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+      ctx.globalAlpha *= 0.15;
+      ctx.fill();
+      ctx.globalAlpha *= 6;
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      break;
+
+    case 'triangle':
+      ctx.beginPath();
+      const h = size * Math.sqrt(3) / 2;
+      ctx.moveTo(0, -h * 0.67);
+      ctx.lineTo(size / 2, h * 0.33);
+      ctx.lineTo(-size / 2, h * 0.33);
+      ctx.closePath();
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      break;
+
+    case 'blob':
+      ctx.beginPath();
+      const pts = 8;
+      for (let i = 0; i <= pts; i++) {
+        const angle = (i / pts) * Math.PI * 2;
+        const r = size / 2 * (0.8 + 0.2 * Math.sin(i * 2.3 + s.rotation * 3));
+        const x = Math.cos(angle) * r;
+        const y = Math.sin(angle) * r;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      break;
+
+    case 'star':
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const angle = (i / 10) * Math.PI * 2 - Math.PI / 2;
+        const r = i % 2 === 0 ? size / 2 : size / 4;
+        const x = Math.cos(angle) * r;
+        const y = Math.sin(angle) * r;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+      break;
+
+    case 'jagged':
+      ctx.beginPath();
+      const jPts = 7;
+      for (let i = 0; i <= jPts; i++) {
+        const angle = (i / jPts) * Math.PI * 2;
+        const r = size / 2 * (i % 2 === 0 ? 1 : 0.55);
+        ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
+      }
+      ctx.closePath();
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      break;
+
+    case 'drop':
+      ctx.beginPath();
+      ctx.arc(0, size * 0.1, size / 3, 0, Math.PI);
+      ctx.lineTo(-size / 6, size * 0.1);
+      ctx.quadraticCurveTo(0, -size * 0.55, size / 6, size * 0.1);
+      ctx.closePath();
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      break;
+
+    case 'wave':
+      ctx.beginPath();
+      for (let x = -size / 2; x <= size / 2; x += 2) {
+        const y = Math.sin((x / size) * Math.PI * 3) * (size * 0.2);
+        x === -size / 2 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      break;
+
+    case 'heart':
+      ctx.beginPath();
+      const hs = size * 0.4;
+      ctx.moveTo(0, hs * 0.3);
+      ctx.bezierCurveTo(0, -hs * 0.3, -hs, -hs * 0.3, -hs, hs * 0.3);
+      ctx.bezierCurveTo(-hs, hs, 0, hs * 1.3, 0, hs * 1.5);
+      ctx.bezierCurveTo(0, hs * 1.3, hs, hs, hs, hs * 0.3);
+      ctx.bezierCurveTo(hs, -hs * 0.3, 0, -hs * 0.3, 0, hs * 0.3);
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      break;
+  }
+}
+
+// Start loop immediately
+drawLoop();
+
+// =============================================
+// V-A 2D Plot
+// =============================================
+let vaHistory = [];
+
+function updateVAPlot(valence, arousal, dominant) {
+  vaHistory.push({ valence, arousal, dominant });
+  if (vaHistory.length > 30) vaHistory.shift();
+  drawVAPlot();
+}
+
+function drawVAPlot() {
+  const W = vaCanvas.width, H = vaCanvas.height;
+  vaCtx.clearRect(0, 0, W, H);
+
+  // Background
+  vaCtx.fillStyle = '#141820';
+  vaCtx.fillRect(0, 0, W, H);
+
+  // Grid lines
+  vaCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+  vaCtx.lineWidth = 0.5;
+  vaCtx.beginPath();
+  vaCtx.moveTo(W / 2, 0); vaCtx.lineTo(W / 2, H);
+  vaCtx.moveTo(0, H / 2); vaCtx.lineTo(W, H / 2);
+  vaCtx.stroke();
+
+  // Mood zone labels
+  vaCtx.font = '7px monospace';
+  vaCtx.fillStyle = 'rgba(255,255,255,0.12)';
+  const pad = 8;
+  vaCtx.fillText('ANGRY', pad, pad + 7);
+  vaCtx.fillText('ENERGETIC', W - 65, pad + 7);
+  vaCtx.fillText('SAD', pad, H - pad);
+  vaCtx.fillText('CALM', W - 34, H - pad);
+
+  // Trail
+  for (let i = 0; i < vaHistory.length; i++) {
+    const h = vaHistory[i];
+    const px = ((h.valence + 1) / 2) * (W - 20) + 10;
+    const py = (1 - (h.arousal + 1) / 2) * (H - 20) + 10;
+    const alpha = 0.15 + (i / vaHistory.length) * 0.75;
+    const color = MOOD_COLORS[h.dominant] || '#888';
+    vaCtx.beginPath();
+    vaCtx.arc(px, py, 3 + (i / vaHistory.length) * 3, 0, Math.PI * 2);
+    vaCtx.fillStyle = color + Math.round(alpha * 255).toString(16).padStart(2, '0');
+    vaCtx.fill();
+  }
+
+  // Current dot
+  if (vaHistory.length > 0) {
+    const cur = vaHistory[vaHistory.length - 1];
+    const px = ((cur.valence + 1) / 2) * (W - 20) + 10;
+    const py = (1 - (cur.arousal + 1) / 2) * (H - 20) + 10;
+    const color = MOOD_COLORS[cur.dominant] || '#888';
+    vaCtx.beginPath();
+    vaCtx.arc(px, py, 5, 0, Math.PI * 2);
+    vaCtx.fillStyle = color;
+    vaCtx.fill();
+    vaCtx.beginPath();
+    vaCtx.arc(px, py, 9, 0, Math.PI * 2);
+    vaCtx.strokeStyle = color + '60';
+    vaCtx.lineWidth = 1.5;
+    vaCtx.stroke();
+  }
+}
+
+// =============================================
+// Sidebar updates
+// =============================================
+function buildMoodBars() {
+  const container = document.getElementById('moodBars');
+  container.innerHTML = '';
+  Object.keys(MOOD_COLORS).forEach(mood => {
+    const row = document.createElement('div');
+    row.className = 'mood-bar-row';
+    row.innerHTML = `
+      <div class="mood-bar-label">${mood}</div>
+      <div class="mood-bar-track">
+        <div class="mood-bar-fill" id="bar-${mood}" style="background:${MOOD_COLORS[mood]}"></div>
+      </div>
+      <div class="mood-bar-pct" id="pct-${mood}">0%</div>
+    `;
+    container.appendChild(row);
+  });
+}
+buildMoodBars();
+
+function updateSidebar(chunk) {
+  // Dominant mood
+  const { dominant, valence, arousal, mood, features } = chunk;
+  const color = MOOD_COLORS[dominant] || '#888';
+  document.getElementById('moodSwatch').style.background = color;
+  document.getElementById('moodName').textContent = dominant.toUpperCase();
+  document.getElementById('moodName').style.color = color;
+  const conf = Math.round((mood[dominant] || 0) * 100);
+  document.getElementById('moodConf').textContent = `${conf}% confidence · chunk ${chunk.index}`;
+
+  // Bars
+  Object.keys(MOOD_COLORS).forEach(m => {
+    const pct = Math.round((mood[m] || 0) * 100);
+    const fill = document.getElementById('bar-' + m);
+    const pctEl = document.getElementById('pct-' + m);
+    if (fill) fill.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+  });
+
+  // Features
+  const tempo = features?.tempo ?? null;
+  const energy = features?.energy ?? null;
+  const bright = features?.brightness ?? null;
+  document.getElementById('fTempo').textContent = tempo != null ? Math.round(tempo) : '—';
+  document.getElementById('fEnergy').textContent = energy != null ? energy.toFixed(3) : '—';
+  document.getElementById('fBright').textContent = bright != null ? bright.toFixed(2) : '—';
+
+  // VA readout
+  document.getElementById('valenceNum').textContent = valence.toFixed(2);
+  document.getElementById('arousalNum').textContent = arousal.toFixed(2);
+  document.getElementById('valenceNum').style.color = valence > 0 ? '#f7e248' : '#6b8cfa';
+  document.getElementById('arousalNum').style.color = arousal > 0 ? '#f5a623' : '#4ecdc4';
+}
+
+// =============================================
+// Timeline
+// =============================================
+function addTimelineItem(chunk) {
+  const { dominant, valence, arousal, timeStart, timeEnd, index } = chunk;
+  const color = MOOD_COLORS[dominant] || '#888';
+  const timeline = document.getElementById('timeline');
+
+  // Deactivate previous
+  timeline.querySelectorAll('.chunk-item.active').forEach(el => el.classList.remove('active'));
+
+  const item = document.createElement('div');
+  item.className = 'chunk-item active';
+  item.dataset.index = index;
+  const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+  item.innerHTML = `
+    <div class="chunk-time">${fmt(timeStart)}</div>
+    <div class="chunk-mood-dot" style="background:${color}"></div>
+    <div class="chunk-mood-label" style="color:${color}">${dominant}</div>
+    <div class="chunk-va">V:${valence.toFixed(2)} A:${arousal.toFixed(2)}</div>
+  `;
+  item.addEventListener('click', () => {
+    timeline.querySelectorAll('.chunk-item').forEach(el => el.classList.remove('active'));
+    item.classList.add('active');
+    updateSidebar(chunks[index]);
+    updateVAPlot(chunks[index].valence, chunks[index].arousal, chunks[index].dominant);
+    spawnShapesForMood(chunks[index]);
+  });
+  timeline.appendChild(item);
+  timeline.scrollTop = timeline.scrollHeight;
+}
+
+// =============================================
+// Status / UI utils
+// =============================================
+function setStatus(s) {
+  const pill = document.getElementById('statusPill');
+  pill.className = 'status-pill' + (s !== 'idle' ? ' ' + s : '');
+  pill.textContent = s;
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+function resetApp(showOverlay = true) {
+  chunks = [];
+  shapes = [];
+  vaHistory = [];
+  currentChunkIndex = -1;
+  isAnalyzing = false;
+  bgHue = targetHue = 230;
+  bgSaturation = targetSaturation = 15;
+  bgLightness = targetLightness = 5;
+
+  document.getElementById('timeline').innerHTML = '';
+  document.getElementById('moodName').textContent = '—';
+  document.getElementById('moodName').style.color = 'var(--muted)';
+  document.getElementById('moodSwatch').style.background = 'var(--muted)';
+  document.getElementById('moodConf').textContent = 'Waiting for audio...';
+  document.getElementById('valenceNum').textContent = '0.00';
+  document.getElementById('arousalNum').textContent = '0.00';
+  document.getElementById('fTempo').textContent = '—';
+  document.getElementById('fEnergy').textContent = '—';
+  document.getElementById('fBright').textContent = '—';
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('logoDot').classList.remove('active');
+  setStatus('idle');
+  buildMoodBars();
+  drawVAPlot();
+
+  if (showOverlay) {
+    document.getElementById('uploadOverlay').classList.remove('hidden');
+    document.getElementById('vaReadout').style.display = 'none';
+    document.getElementById('canvasLabel').style.display = 'none';
+    document.getElementById('btnReset').style.display = 'none';
+    fileInput.value = '';
+  }
+}
+
+// =============================================
+// TouchDesigner OSC Bridge — WebSocket sender
+// Connects to osc_bridge.py running on ws://localhost:7001
+// =============================================
+(function () {
+  let ws = null;
+  let retryTimer = null;
+  const WS_URL = 'ws://localhost:7001';
+
+  const statusEl = document.createElement('div');
+  statusEl.id = 'oscStatus';
+  statusEl.style.cssText = `
+    position: fixed; bottom: 14px; right: 16px;
+    font-family: 'Space Mono', monospace; font-size: 9px;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.25);
+    background: rgba(8,10,15,0.85);
+    pointer-events: none; z-index: 999;
+    transition: color 0.4s, border-color 0.4s;
+  `;
+  statusEl.textContent = 'osc · disconnected';
+  document.body.appendChild(statusEl);
+
+  function setOscStatus(state) {
+    const styles = {
+      connected:    { color: '#4ecdc4', border: '#4ecdc4' },
+      disconnected: { color: 'rgba(255,255,255,0.25)', border: 'rgba(255,255,255,0.08)' },
+      sending:      { color: '#f5a623', border: '#f5a623' },
+    };
+    const s = styles[state] || styles.disconnected;
+    statusEl.style.color = s.color;
+    statusEl.style.borderColor = s.border;
+    statusEl.textContent = state === 'connected' ? 'osc · ready'
+                         : state === 'sending'    ? 'osc · sending'
+                         : 'osc · disconnected';
+  }
+
+  function connect() {
+    try {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log('[MoodWave] Connected to OSC bridge at', WS_URL);
+        setOscStatus('connected');
+        clearTimeout(retryTimer);
+      };
+
+      ws.onclose = () => {
+        setOscStatus('disconnected');
+        scheduleRetry();
+      };
+
+      ws.onerror = () => {
+        setOscStatus('disconnected');
+      };
+
+    } catch (e) {
+      setOscStatus('disconnected');
+      scheduleRetry();
+    }
+  }
+
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, 3000);
+  }
+
+  // Called by processChunk for every incoming SSE chunk
+  window.sendToOscBridge = function (chunk) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const payload = {
+      valence:      chunk.valence,
+      arousal:      chunk.arousal,
+      dominant:     chunk.dominant,
+      distribution: chunk.mood,
+      tempo:        chunk.features?.tempo      ?? 0,
+      energy:       chunk.features?.energy     ?? 0,
+      brightness:   chunk.features?.brightness ?? 0,
+    };
+    try {
+      ws.send(JSON.stringify(payload));
+      setOscStatus('sending');
+      clearTimeout(window._oscFlashTimer);
+      window._oscFlashTimer = setTimeout(() => setOscStatus('connected'), 600);
+    } catch (e) {
+      console.warn('[MoodWave] OSC send failed:', e);
+    }
+  };
+
+  // Transport control — play/pause/seek/time sent to TD
+  window.sendTransportOSC = function (type, value) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try { ws.send(JSON.stringify({ type, value })); } catch (e) {}
+  };
+
+  connect();
+})();
+
+// =============================================
+// Audio Player (TD-controlled — frontend is remote only)
+// =============================================
+let audioReady = false;
+let tdPlaying = false;
+let tdCurrentTime = 0;
+let tdDuration = 0;
+let tdTimerStart = null;   // performance.now() when play last started
+let tdTimeAtStart = 0;     // tdCurrentTime value when play last started
+let tdTimerInterval = null;
+
+function setupAudio(file) {
+  audioReady = true;
+  tdDuration = 0;
+
+  // Derive duration from chunks
+  if (chunks.length > 0) {
+    tdDuration = chunks[chunks.length - 1].timeEnd;
+  }
+
+  document.getElementById('audioFilename').textContent = file.name;
+  document.getElementById('audioBar').style.display = 'flex';
+
+  document.getElementById('progressWrap').addEventListener('click', (e) => {
+    if (!audioReady || !tdDuration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    tdCurrentTime = pct * tdDuration;
+    if (tdPlaying) tdTimeAtStart = tdCurrentTime, tdTimerStart = performance.now();
+    window.sendTransportOSC?.('seek', tdCurrentTime);
+    updateAudioProgress();
+  });
+
+  // Tick the local clock, sync time + active chunk mood data to TD every 100ms
+  let lastSentChunkIndex = -1;
+  tdTimerInterval = setInterval(() => {
+    if (tdPlaying) {
+      tdCurrentTime = tdTimeAtStart + (performance.now() - tdTimerStart) / 1000;
+      if (tdDuration && tdCurrentTime >= tdDuration) {
+        tdCurrentTime = tdDuration;
+        tdPlaying = false;
+        document.getElementById('playBtn').textContent = '▶';
+      }
+      window.sendTransportOSC?.('time', tdCurrentTime);
+
+      // Send the active chunk's mood data whenever the chunk changes
+      const activeIndex = Math.min(
+        Math.floor(tdCurrentTime / 10),
+        chunks.length - 1
+      );
+      if (activeIndex >= 0 && activeIndex !== lastSentChunkIndex) {
+        lastSentChunkIndex = activeIndex;
+        window.sendToOscBridge?.(chunks[activeIndex]);
+      }
+    }
+    updateAudioProgress();
+  }, 100);
+
+  // Auto-play in TD
+  tdPlay();
+}
+
+function tdPlay() {
+  tdPlaying = true;
+  tdTimeAtStart = tdCurrentTime;
+  tdTimerStart = performance.now();
+  window.sendTransportOSC?.('play', tdCurrentTime);
+  document.getElementById('playBtn').textContent = '▐▐';
+}
+
+function tdPause() {
+  tdPlaying = false;
+  window.sendTransportOSC?.('pause', tdCurrentTime);
+  document.getElementById('playBtn').textContent = '▶';
+}
+
+function togglePlay() {
+  if (!audioReady) return;
+  if (tdPlaying) tdPause(); else tdPlay();
+}
+
+function updateAudioProgress() {
+  if (!tdDuration) return;
+  const pct = Math.min(100, (tdCurrentTime / tdDuration) * 100);
+  document.getElementById('audioProgressFill').style.width = pct + '%';
+  document.getElementById('audioTime').textContent =
+    formatTime(tdCurrentTime) + ' / ' + formatTime(tdDuration);
+}
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+
+// =============================================
+// TouchDesigner MJPEG Feed
+// =============================================
+const TD_FEED_URL    = 'http://localhost:9000/video';
+const TD_HEALTH_URL  = 'http://localhost:9000/health';
+const TD_RETRY_MS    = 3000;
+
+let tdConnected = false;
+let tdRetryTimer = null;
+
+function startTDFeed() {
+  checkTDHealth();
+}
+
+async function checkTDHealth() {
+  try {
+    const r = await fetch(TD_HEALTH_URL, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) {
+      connectTDFeed();
+    } else {
+      scheduleTDRetry();
+    }
+  } catch {
+    scheduleTDRetry();
+  }
+}
+
+function connectTDFeed() {
+  const img = document.getElementById('tdFeed');
+  const offline = document.getElementById('tdOffline');
+  const dot = document.getElementById('tdLiveDot');
+
+  img.onload = () => {
+    if (!tdConnected) {
+      tdConnected = true;
+      img.style.display = 'block';
+      offline.style.display = 'none';
+      dot.classList.add('live');
+      clearTimeout(tdRetryTimer);
+    }
+  };
+
+  img.onerror = () => {
+    tdConnected = false;
+    img.style.display = 'none';
+    offline.style.display = 'flex';
+    dot.classList.remove('live');
+    img.src = '';
+    scheduleTDRetry();
+  };
+
+  // Set the MJPEG src — browser handles the multipart stream natively
+  img.src = TD_FEED_URL + '?t=' + Date.now();
+}
+
+function scheduleTDRetry() {
+  clearTimeout(tdRetryTimer);
+  tdRetryTimer = setTimeout(checkTDHealth, TD_RETRY_MS);
+}
+
+// Start polling for TD on page load
+startTDFeed();
+
+</script>
+</body>
+</html>
