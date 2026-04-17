@@ -89,6 +89,7 @@ def train_model(
     model_kwargs=None,
     best_metric_mode="r2",
     quiet=False,
+    num_workers=0,
 ):
     max_epochs = epochs if epochs is not None else (args.epochs if args else 80)
     patience_val = patience if patience is not None else (args.patience if args else 15)
@@ -108,6 +109,7 @@ def train_model(
         yv_val,
         ya_val,
         bs,
+        num_workers=num_workers,
     )
 
     from core.model import MoodCNNBiGRU
@@ -138,8 +140,8 @@ def train_model(
 
     best_state = None
     patience_counter = 0
-
-    for epoch in (pbar := tqdm(range(max_epochs), desc="CNN-BiGRU multitask", unit="epoch", disable=quiet)):
+    pbar = tqdm(range(max_epochs), desc="CNN-BiGRU multitask", unit="epoch", disable=quiet)
+    for epoch in pbar:
         model.train()
         total_loss = 0.0
         total_valence_loss = 0.0

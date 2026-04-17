@@ -88,6 +88,7 @@ class LSOSearch:
         batch_size=32,
         n_mels=64,
         seed=42,
+        num_workers=0,
     ):
         self.X_train = X_train
         self.yv_train = yv_train
@@ -108,6 +109,7 @@ class LSOSearch:
         self.n_mels = n_mels
         self.rng = np.random.default_rng(seed)
         self.n_dims = len(SEARCH_SPACE)
+        self.num_workers = num_workers
 
     def _evaluate(self, param_dict):
         model_kwargs = _build_model_kwargs(param_dict)
@@ -132,6 +134,7 @@ class LSOSearch:
             model_kwargs=model_kwargs,
             best_metric_mode="loss",
             quiet=True,
+            num_workers=self.num_workers,
         )
 
         _, val_loader = build_loaders(

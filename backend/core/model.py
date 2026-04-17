@@ -54,12 +54,14 @@ class MoodCNNBiGRU(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 1),
+            nn.Tanh()
         )
         self.arousal_head = nn.Sequential(
             nn.Linear(head_in, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 1),
+            nn.Tanh(),
         )
 
     def forward(self, x):

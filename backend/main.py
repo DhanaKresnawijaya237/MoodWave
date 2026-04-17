@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from core.model import MoodCNNBiGRU
 from features.processor import MEL_N_MELS, extract_features_from_array, extract_mel_segments
-from core.utils import denormalize_z, valence_arousal_to_mood_distribution
+from core.utils import valence_arousal_to_mood_distribution
 
 app = FastAPI(title="MoodWave API")
 
@@ -33,7 +33,6 @@ def _load_cnnbigru():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_path = "models/cnn_bigru_multitask_paper.pth"
     mel_stats_path = "models/cnn_bigru_multitask_paper_mel_stats.pkl"
-    z_stats_path = "models/cnn_bigru_multitask_paper_z_stats.pkl"
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model checkpoint not found at {model_path}")
@@ -47,15 +46,14 @@ def _load_cnnbigru():
     model.eval()
 
     mel_stats = joblib.load(mel_stats_path)
-    z_stats = joblib.load(z_stats_path) if os.path.exists(z_stats_path) else None
-    return model, mel_stats, z_stats, device
+    return model, mel_stats, device
 
 
 def _predict_cnnbigru(y, sr):
     global _cnnbigru_cache
     if _cnnbigru_cache is None:
         _cnnbigru_cache = _load_cnnbigru()
-    model, mel_stats, z_stats, device = _cnnbigru_cache
+    model, mel_stats, device = _cnnbigru_cache
 
     segments = extract_mel_segments(y, sr)
     if segments is None:
@@ -68,18 +66,10 @@ def _predict_cnnbigru(y, sr):
     with torch.no_grad():
         x = torch.from_numpy(segments).to(device)
         pred_v, pred_a = model(x)
-        valence_z = float(pred_v.mean().cpu().numpy())
-        arousal_z = float(pred_a.mean().cpu().numpy())
+        valence = float(pred_v.mean().cpu().numpy())
+        arousal = float(pred_a.mean().cpu().numpy())
 
-    if z_stats is not None:
-        valence, arousal = denormalize_z(
-            np.array([valence_z]), np.array([arousal_z]), z_stats
-        )
-        valence = float(valence[0])
-        arousal = float(arousal[0])
-    else:
-        valence = valence_z
-        arousal = arousal_z
+
 
     return {
         "valence": round(valence, 3),

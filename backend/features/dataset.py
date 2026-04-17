@@ -40,7 +40,7 @@ class MelRegressionDataset(Dataset):
         )
 
 
-def build_loaders(X_train, yv_train, ya_train, X_val, yv_val, ya_val, batch_size):
+def build_loaders(X_train, yv_train, ya_train, X_val, yv_val, ya_val, batch_size, num_workers=0):
     train_ds = MelRegressionDataset(X_train, yv_train, ya_train, augment=True)
     val_ds = MelRegressionDataset(X_val, yv_val, ya_val, augment=False)
     train_loader = DataLoader(
@@ -48,11 +48,15 @@ def build_loaders(X_train, yv_train, ya_train, X_val, yv_val, ya_val, batch_size
         batch_size=batch_size,
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size * 2,
         shuffle=False,
         pin_memory=torch.cuda.is_available(),
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
     )
     return train_loader, val_loader

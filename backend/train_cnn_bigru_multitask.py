@@ -1,5 +1,3 @@
-"""Paper-style CNN-BiGRU multitask regression on DEAM dynamic annotations."""
-
 import argparse
 import os
 from multiprocessing import freeze_support
@@ -14,8 +12,7 @@ from core.model import MoodCNNBiGRU
 from features.processor import MEL_N_MELS, load_or_extract_base_segments
 from features.splits import split_indices
 from training.engine import evaluate_loader, train_model
-from sklearn.metrics import mean_absolute_error
-from core.utils import compute_mel_stats, compute_z_stats, denormalize_z, normalize_segments, normalize_z, set_seed, write_report
+from core.utils import compute_mel_stats,  normalize_segments, set_seed, write_report
 
 PREP_WORKERS = max(1, min(4, (os.cpu_count() or 1) - 1))
 SEED = 42
@@ -79,13 +76,7 @@ def main():
     X_val = normalize_segments(X_val, mel_stats)
     X_test = normalize_segments(X_test, mel_stats)
 
-    # Z-normalize V/A labels (paper Sec 3.1, Eq. 6 context)
-    z_stats = compute_z_stats(yv_train, ya_train)
-    yv_train, ya_train = normalize_z(yv_train, ya_train, z_stats)
-    yv_val, ya_val = normalize_z(yv_val, ya_val, z_stats)
-    yv_test, ya_test = normalize_z(yv_test, ya_test, z_stats)
-
-    model_path, mel_stats_path, z_stats_path, report_path = artifact_paths(args.split)
+    model_path, mel_stats_path, report_path = artifact_paths(args.split)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"\nSplit: {args.split}")
@@ -115,6 +106,7 @@ def main():
                 batch_size=args.batch_size,
                 n_mels=MEL_N_MELS,
                 seed=SEED,
+                num_workers=args.workers,
             )
             best_params = lso.optimize()
             print("\n=== Best hyperparameters from LSO ===")
@@ -138,7 +130,7 @@ def main():
             X_train, yv_train, ya_train,
             X_val, yv_val, ya_val,
             device, args=args, n_mels=MEL_N_MELS,
-            model_kwargs=model_kwargs, lr=final_lr, weight_decay=final_wd,
+            model_kwargs=model_kwargs, lr=final_lr, weight_decay=final_wd, num_workers=args.workers,
         )
         os.makedirs("models", exist_ok=True)
         checkpoint = {
@@ -147,28 +139,18 @@ def main():
         }
         torch.save(checkpoint, model_path)
         joblib.dump(mel_stats, mel_stats_path)
-        joblib.dump(z_stats, z_stats_path)
         print(f"\nSaved multitask checkpoint: {model_path}")
         print(f"Saved mel stats: {mel_stats_path}")
-        print(f"Saved z stats: {z_stats_path}")
 
     test_loader = DataLoader(
         MelRegressionDataset(X_test, yv_test, ya_test, augment=False),
         batch_size=args.batch_size * 2,
         shuffle=False,
         pin_memory=torch.cuda.is_available(),
+        num_workers=args.workers,
+        persistent_workers=args.workers > 0,
     )
     test_metrics = evaluate_loader(model, test_loader, device)
-
-    # Denormalize predictions and targets for report in original scale
-    test_metrics["valence_mae"] = float(mean_absolute_error(
-        denormalize_z(test_metrics["yv_true"], test_metrics["ya_true"], z_stats)[0],
-        denormalize_z(test_metrics["yv_pred"], test_metrics["ya_pred"], z_stats)[0],
-    ))
-    test_metrics["arousal_mae"] = float(mean_absolute_error(
-        denormalize_z(test_metrics["yv_true"], test_metrics["ya_true"], z_stats)[1],
-        denormalize_z(test_metrics["yv_pred"], test_metrics["ya_pred"], z_stats)[1],
-    ))
 
     write_report(
         f"CNN-BiGRU multitask {args.split} test metrics",

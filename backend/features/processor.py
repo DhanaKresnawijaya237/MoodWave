@@ -198,7 +198,9 @@ def _iter_song_results(tasks, worker_count, augment=False):
                 prep_bar.update(1)
         return
 
-    ctx = get_context("spawn")
+    import sys
+    ctx = get_context("spawn") if sys.platform == "win32" else get_context("fork")
+    
 
     def submit_next(executor, pending, task_iter):
         next_task = next(task_iter, None)
