@@ -12,11 +12,15 @@ env/
 
 # Uploaded audio files (runtime data, not source)
 backend/uploads/
+backend/saved_analyses/
 
 # My stuff
+AGENTS.md
 my_stuff/
+CLAUDE.md
 
 # OS
 .DS_Store
 Thumbs.db
 data/
+Songs/

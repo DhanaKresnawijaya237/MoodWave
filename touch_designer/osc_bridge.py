@@ -54,7 +54,15 @@ def send_timeline(payload):
         "energy":     [float, ...],
         "brightness": [float, ...],
         "dominant_idx": [int, ...],
-        "mood": { "energetic": [float...], "happy": [...], ... }
+        "mood": { "energetic": [float...], "happy": [...], ... },
+        "stems": {
+          "vocals": "C:/.../stems/vocals.wav",
+          "drums": "C:/.../stems/drums.wav",
+          "bass": "C:/.../stems/bass.wav",
+          "guitar": "C:/.../stems/guitar.wav",
+          "piano": "C:/.../stems/piano.wav",
+          "other": "C:/.../stems/other.wav"
+        }
       }
     """
     filepath       = str(payload.get("filepath", ""))
@@ -68,6 +76,14 @@ def send_timeline(payload):
     osc.send_message("/moodwave/duration",       duration)
     osc.send_message("/moodwave/chunk_duration", chunk_duration)
     osc.send_message("/moodwave/num_chunks",     num_chunks)
+
+    # 1b. Stem file paths (if Demucs separation was successful)
+    stems = payload.get("stems")
+    if stems and isinstance(stems, dict):
+        for stem_name, stem_path in stems.items():
+            if stem_path:
+                osc.send_message(f"/moodwave/stems/{stem_name}", str(stem_path))
+        print(f"[OSC] STEMS       {list(stems.keys())}")
 
     # 2. Timeline arrays - each becomes a multi-sample channel in TD's OSC In CHOP
     def _send_array(addr, arr):

@@ -53,6 +53,11 @@
     backdrop-filter: blur(8px);
     z-index: 10;
   }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
 
   .logo {
     font-family: var(--mono);
@@ -84,6 +89,7 @@
     transition: all 0.4s;
   }
   .status-pill.analyzing { border-color: #4ecdc4; color: #4ecdc4; }
+  .status-pill.separating { border-color: #f5a623; color: #f5a623; }
   .status-pill.done { border-color: var(--accent); color: var(--accent); }
 
   /* --- Main content --- */
@@ -209,6 +215,58 @@
     transition: opacity 0.5s, pointer-events 0.5s;
   }
   .upload-overlay.hidden { opacity: 0; pointer-events: none; }
+
+  /* Stem-separation blocking overlay */
+  .separating-overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px;
+    background: rgba(8, 10, 15, 0.92);
+    backdrop-filter: blur(6px);
+    z-index: 50;
+    transition: opacity 0.4s, pointer-events 0.4s;
+  }
+  .separating-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .separating-spinner {
+    width: 36px; height: 36px;
+    border: 2px solid rgba(124,107,250,0.2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .separating-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .separating-progress {
+    width: min(340px, 72vw);
+    height: 4px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.08);
+  }
+  .separating-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), #4ecdc4, #f7e248);
+    transition: width 0.35s ease;
+  }
+  .separating-progress-text {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.42);
+    text-transform: uppercase;
+  }
 
   .drop-zone {
     width: 280px; height: 180px;
@@ -476,7 +534,16 @@
     color: var(--accent);
   }
   .btn.primary:hover { background: rgba(124,107,250,0.1); }
+  .btn.danger {
+    border-color: rgba(255,107,138,0.45);
+    color: #ff6b8a;
+  }
+  .btn.danger:hover { background: rgba(255,107,138,0.08); }
   .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn.compact {
+    padding: 6px 10px;
+    font-size: 9px;
+  }
 
   /* Loading bar */
   .progress-bar {
@@ -531,6 +598,197 @@
   }
   .toast.show { opacity: 1; }
 
+  /* Saved analysis modals */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(5, 7, 11, 0.78);
+    backdrop-filter: blur(8px);
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    width: min(860px, 94vw);
+    max-height: 86vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: #0d1118;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 20px 70px rgba(0,0,0,0.45);
+  }
+  .modal.small { width: min(460px, 94vw); }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .modal-close {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .modal-close:hover { color: var(--text); border-color: rgba(255,255,255,0.22); }
+  .modal-body {
+    padding: 18px;
+    overflow: auto;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 18px;
+    border-top: 1px solid var(--border);
+  }
+  .field-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .text-input {
+    width: 100%;
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #080a0f;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    outline: none;
+  }
+  .text-input:focus { border-color: var(--accent); }
+  .save-preview {
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.8;
+    color: var(--muted);
+  }
+  .library-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 18px;
+    min-height: 420px;
+  }
+  .saved-list {
+    border-right: 1px solid var(--border);
+    padding-right: 14px;
+    overflow-y: auto;
+  }
+  .saved-item {
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    margin-bottom: 8px;
+    background: rgba(255,255,255,0.02);
+  }
+  .saved-item.active {
+    border-color: var(--accent);
+    background: rgba(124,107,250,0.08);
+  }
+  .saved-item-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .saved-item-meta {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .library-detail {
+    overflow-y: auto;
+    min-width: 0;
+  }
+  .detail-title {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+  .detail-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1.8;
+    margin-bottom: 16px;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .detail-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.02);
+    padding: 10px;
+  }
+  .detail-card-label {
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .detail-card-value {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--text);
+  }
+  .modal-mood-bars { display: flex; flex-direction: column; gap: 8px; }
+  .stem-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .stem-tag {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    color: #4ecdc4;
+    border: 1px solid rgba(78,205,196,0.3);
+    border-radius: 999px;
+    padding: 4px 8px;
+    text-transform: uppercase;
+  }
+  @media (max-width: 780px) {
+    .library-layout { grid-template-columns: 1fr; }
+    .saved-list { border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 12px; max-height: 220px; }
+  }
+
   /* Animated background particles on canvas */
   @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(20px); }
@@ -548,8 +806,20 @@
       <div class="logo-dot" id="logoDot"></div>
       MOODWAVE
     </div>
-    <div id="statusPill" class="status-pill">idle</div>
+    <div class="header-actions">
+      <button class="btn compact" onclick="openLibraryModal()">Library</button>
+      <div id="statusPill" class="status-pill">idle</div>
+    </div>
   </header>
+
+  <div class="separating-overlay hidden" id="separatingOverlay" role="status" aria-live="polite">
+    <div class="separating-spinner"></div>
+    <div class="separating-label" id="separatingLabel">Separating stems...</div>
+    <div class="separating-progress">
+      <div class="separating-progress-fill" id="separatingProgressFill"></div>
+    </div>
+    <div class="separating-progress-text" id="separatingProgressText">0%</div>
+  </div>
 
   <div class="content">
 
@@ -641,6 +911,7 @@
       <!-- Controls -->
       <div class="controls">
         <button class="btn primary" id="btnLoad" onclick="document.getElementById('fileInput').click()">Load File</button>
+        <button class="btn" id="btnSave" onclick="openSaveModal()" style="display:none">Save</button>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <button class="btn" id="btnReset" onclick="resetApp()" style="display:none">Reset</button>
       </div>
@@ -661,11 +932,51 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="modal-backdrop hidden" id="saveModal">
+  <div class="modal small">
+    <div class="modal-header">
+      <div class="modal-title">Save Analysis</div>
+      <button class="modal-close" onclick="closeSaveModal()">x</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-label">Name</div>
+      <input class="text-input" id="saveNameInput" maxlength="80" placeholder="Song or scene name">
+      <div class="save-preview" id="savePreview"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeSaveModal()">Cancel</button>
+      <button class="btn primary" id="confirmSaveBtn" onclick="saveCurrentAnalysis()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="libraryModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Saved Songs</div>
+      <button class="modal-close" onclick="closeLibraryModal()">x</button>
+    </div>
+    <div class="modal-body">
+      <div class="library-layout">
+        <div class="saved-list" id="savedList"></div>
+        <div class="library-detail" id="savedDetail"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="refreshSavedAnalyses()">Refresh</button>
+      <button class="btn danger" id="deleteSavedBtn" onclick="deleteSelectedSavedAnalysis()" disabled>Delete</button>
+      <button class="btn primary" id="loadSavedBtn" onclick="loadSelectedSavedAnalysis()" disabled>Load To TD</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // =============================================
 // Config
 // =============================================
-const API_BASE = 'http://localhost:8000';
+const API_BASE = window.location.protocol.startsWith('http')
+  ? window.location.origin
+  : 'http://127.0.0.1:8000';
 
 const MOOD_COLORS = {
   energetic: '#f5a623',
@@ -702,6 +1013,13 @@ let targetSaturation = 15;
 let bgLightness = 5;
 let targetLightness = 5;
 let isAnalyzing = false;
+let lastStems = null;
+let currentSourceFilename = '';
+let currentDuration = 0;
+let currentSavedSelection = null;
+let savedItems = [];
+let separationProgress = 0;
+let separationTimer = null;
 
 // =============================================
 // Canvas setup
@@ -792,9 +1110,13 @@ fileInput.addEventListener('change', e => {
 async function handleFile(file) {
   resetApp(false);
   isAnalyzing = true;
+  currentSourceFilename = file.name;
+  currentDuration = 0;
+  lastStems = null;
 
   document.getElementById('uploadOverlay').classList.add('hidden');
   document.getElementById('btnReset').style.display = 'block';
+  document.getElementById('btnSave').style.display = 'none';
   document.getElementById('logoDot').classList.add('active');
   setStatus('analyzing');
 
@@ -831,15 +1153,33 @@ async function handleFile(file) {
           setStatus('done');
           document.getElementById('logoDot').classList.remove('active');
           document.getElementById('progressFill').style.width = '100%';
+          lastStems = data.stems || null;
+          currentDuration = chunks.length ? chunks[chunks.length - 1].timeEnd : currentDuration;
+          setSeparatingOverlay(false);
+          document.getElementById('btnSave').style.display = 'block';
           // All chunks processed — ship the full timeline to TD, then show player
-          window.sendTimelineToOscBridge?.(chunks, analysisFilepath);
+          window.sendTimelineToOscBridge?.(chunks, analysisFilepath, data.stems);
           setupAudio(file);
           break;
+        }
+
+        // Status updates from backend (separating / analyzing)
+        if (data.status) {
+          if (data.status === 'separating') {
+            setStatus('separating');
+            setSeparatingOverlay(true, data.progress, data.message);
+          } else if (data.status === 'analyzing') {
+            setStatus('analyzing');
+            updateSeparationProgress(data.progress ?? 100, data.message || 'Analyzing mood timeline');
+            setSeparatingOverlay(false);
+          }
+          continue;
         }
 
         // First SSE event carries only filepath + total_duration (no chunk data)
         if (data.filepath) {
           analysisFilepath = data.filepath;
+          currentDuration = data.total_duration || 0;
           totalChunks = Math.ceil(data.total_duration / 10);
           continue;
         }
@@ -854,6 +1194,7 @@ async function handleFile(file) {
   } catch (err) {
     isAnalyzing = false;
     document.getElementById('logoDot').classList.remove('active');
+    setSeparatingOverlay(false);
     setStatus('idle');
     showToast(err.message.includes('fetch') ? 'Cannot connect to backend (localhost:8000). Is the server running?' : err.message);
   }
@@ -1338,8 +1679,60 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 4000);
 }
 
+function updateSeparationProgress(progress, message, force = false) {
+  const fill = document.getElementById('separatingProgressFill');
+  const text = document.getElementById('separatingProgressText');
+  const label = document.getElementById('separatingLabel');
+  if (typeof progress === 'number' && !Number.isNaN(progress)) {
+    const clamped = Math.min(100, Math.max(0, progress));
+    separationProgress = force ? clamped : Math.max(separationProgress, clamped);
+  }
+  if (message && label) label.textContent = message;
+  if (fill) fill.style.width = separationProgress.toFixed(0) + '%';
+  if (text) text.textContent = separationProgress.toFixed(0) + '%';
+}
+
+function startSeparationTimer() {
+  clearInterval(separationTimer);
+  separationTimer = setInterval(() => {
+    if (separationProgress >= 93) return;
+    const step = Math.max(0.4, (94 - separationProgress) * 0.055);
+    separationProgress = Math.min(93, separationProgress + step);
+    updateSeparationProgress(separationProgress);
+  }, 900);
+}
+
+function stopSeparationTimer() {
+  clearInterval(separationTimer);
+  separationTimer = null;
+}
+
+function setSeparatingOverlay(visible, progress = null, message = null) {
+  const overlay = document.getElementById('separatingOverlay');
+  if (!overlay) return;
+  overlay.classList.toggle('hidden', !visible);
+  if (visible) {
+    if (progress != null) separationProgress = Math.max(separationProgress, progress);
+    updateSeparationProgress(progress ?? separationProgress, message || 'Separating stems...');
+    startSeparationTimer();
+  } else {
+    stopSeparationTimer();
+    updateSeparationProgress(progress ?? 100, message);
+    setTimeout(() => {
+      if (!separationTimer && overlay.classList.contains('hidden')) {
+        separationProgress = 0;
+        updateSeparationProgress(0, 'Separating stems...', true);
+      }
+    }, 450);
+  }
+}
+
 function resetApp(showOverlay = true) {
   stopPlaybackMode?.();
+  if (tdTimerInterval) {
+    clearInterval(tdTimerInterval);
+    tdTimerInterval = null;
+  }
   lastPlaybackChunkIdx = -1;
   vaHighlightIdx = -1;
   chunks = [];
@@ -1347,7 +1740,14 @@ function resetApp(showOverlay = true) {
   vaHistory = [];
   currentChunkIndex = -1;
   analysisFilepath = null;
+  lastStems = null;
+  currentSavedSelection = null;
+  currentDuration = 0;
   isAnalyzing = false;
+  audioReady = false;
+  tdPlaying = false;
+  tdCurrentTime = 0;
+  tdDuration = 0;
   bgHue = targetHue = 230;
   bgSaturation = targetSaturation = 15;
   bgLightness = targetLightness = 5;
@@ -1363,23 +1763,327 @@ function resetApp(showOverlay = true) {
   document.getElementById('fEnergy').textContent = '—';
   document.getElementById('fBright').textContent = '—';
   document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('audioProgressFill').style.width = '0%';
+  document.getElementById('audioTime').textContent = '0:00 / 0:00';
+  document.getElementById('playBtn').textContent = '▶';
   document.getElementById('logoDot').classList.remove('active');
   setStatus('idle');
   buildMoodBars();
   drawVAPlot();
+  setSeparatingOverlay(false);
 
   if (showOverlay) {
     document.getElementById('uploadOverlay').classList.remove('hidden');
     document.getElementById('vaReadout').style.display = 'none';
     document.getElementById('canvasLabel').style.display = 'none';
     document.getElementById('btnReset').style.display = 'none';
+    document.getElementById('btnSave').style.display = 'none';
+    document.getElementById('audioBar').style.display = 'none';
     fileInput.value = '';
   }
 }
 
 // =============================================
+// Saved analyses
+// =============================================
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function averageMoodForChunks(chunkList) {
+  const avg = Object.fromEntries(Object.keys(MOOD_COLORS).map(m => [m, 0]));
+  if (!chunkList.length) return avg;
+  for (const c of chunkList) {
+    for (const mood of Object.keys(MOOD_COLORS)) {
+      avg[mood] += c.mood?.[mood] ?? 0;
+    }
+  }
+  for (const mood of Object.keys(avg)) avg[mood] /= chunkList.length;
+  return avg;
+}
+
+function dominantMoodFromAverage(avg) {
+  return Object.entries(avg).sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
+}
+
+function openSaveModal() {
+  if (!chunks.length) {
+    showToast('Analyze a song before saving.');
+    return;
+  }
+  const modal = document.getElementById('saveModal');
+  const input = document.getElementById('saveNameInput');
+  const base = (currentSourceFilename || 'MoodWave analysis').replace(/\.[^.]+$/, '');
+  input.value = base;
+  updateSavePreview();
+  modal.classList.remove('hidden');
+  setTimeout(() => input.focus(), 50);
+}
+
+function closeSaveModal() {
+  document.getElementById('saveModal').classList.add('hidden');
+}
+
+function updateSavePreview() {
+  const avg = averageMoodForChunks(chunks);
+  const dominant = dominantMoodFromAverage(avg);
+  const stems = lastStems ? Object.keys(lastStems).join(', ') : 'none';
+  const lastChunk = chunks[chunks.length - 1];
+  document.getElementById('savePreview').innerHTML = `
+    <div>Source: ${escapeHtml(currentSourceFilename || 'current upload')}</div>
+    <div>Duration: ${formatTime(currentDuration || (lastChunk?.timeEnd ?? 0))} · chunks: ${chunks.length}</div>
+    <div>Dominant mood: ${escapeHtml(dominant)}</div>
+    <div>Stems: ${escapeHtml(stems)}</div>
+  `;
+}
+
+async function saveCurrentAnalysis() {
+  const input = document.getElementById('saveNameInput');
+  const button = document.getElementById('confirmSaveBtn');
+  const name = input.value.trim();
+  const lastChunk = chunks[chunks.length - 1];
+  if (!name) {
+    showToast('Give this analysis a name first.');
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/saved-analyses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        source_filename: currentSourceFilename,
+        filepath: analysisFilepath,
+        duration: currentDuration || (lastChunk?.timeEnd ?? 0),
+        chunk_duration: CHUNK_DUR,
+        chunks,
+        stems: lastStems || {},
+      }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Save failed: ${response.status}`);
+    }
+    await response.json();
+    closeSaveModal();
+    showToast('Saved analysis and stems.');
+    refreshSavedAnalyses(false);
+  } catch (err) {
+    showToast(err.message || 'Save failed.');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openLibraryModal() {
+  document.getElementById('libraryModal').classList.remove('hidden');
+  refreshSavedAnalyses();
+}
+
+function closeLibraryModal() {
+  document.getElementById('libraryModal').classList.add('hidden');
+}
+
+function setLibraryButtons() {
+  const hasSelection = Boolean(currentSavedSelection);
+  const hasChunks = Boolean(currentSavedSelection?.chunks?.length);
+  document.getElementById('deleteSavedBtn').disabled = !hasSelection;
+  document.getElementById('loadSavedBtn').disabled = !hasChunks;
+}
+
+async function refreshSavedAnalyses(selectFirst = true) {
+  const list = document.getElementById('savedList');
+  list.innerHTML = '<div class="saved-item-meta">Loading saved songs...</div>';
+  try {
+    const response = await fetch(`${API_BASE}/saved-analyses`);
+    if (!response.ok) throw new Error(`Library failed: ${response.status}`);
+    const data = await response.json();
+    savedItems = data.items || [];
+    renderSavedList();
+    if (selectFirst && savedItems.length) {
+      await selectSavedAnalysis(savedItems[0].id);
+    } else if (!savedItems.length) {
+      currentSavedSelection = null;
+      document.getElementById('savedDetail').innerHTML = '<div class="saved-item-meta">No saved analyses yet.</div>';
+      setLibraryButtons();
+    }
+  } catch (err) {
+    currentSavedSelection = null;
+    setLibraryButtons();
+    list.innerHTML = `<div class="saved-item-meta">${escapeHtml(err.message || 'Could not load saved songs.')}</div>`;
+  }
+}
+
+function renderSavedList() {
+  const list = document.getElementById('savedList');
+  list.innerHTML = '';
+  for (const item of savedItems) {
+    const el = document.createElement('div');
+    el.className = 'saved-item' + (currentSavedSelection?.id === item.id ? ' active' : '');
+    el.dataset.id = item.id;
+    el.innerHTML = `
+      <div class="saved-item-name">${escapeHtml(item.name)}</div>
+      <div class="saved-item-meta">${escapeHtml(formatTime(item.duration || 0))} · ${item.num_chunks || 0} chunks</div>
+      <div class="saved-item-meta">${escapeHtml(item.summary?.dominant_mood || '—')} · ${escapeHtml(item.created_at || '')}</div>
+    `;
+    el.addEventListener('click', () => selectSavedAnalysis(item.id));
+    list.appendChild(el);
+  }
+}
+
+async function selectSavedAnalysis(id) {
+  try {
+    const response = await fetch(`${API_BASE}/saved-analyses/${encodeURIComponent(id)}`);
+    if (!response.ok) throw new Error(`Load failed: ${response.status}`);
+    currentSavedSelection = await response.json();
+    renderSavedList();
+    renderSavedDetail(currentSavedSelection);
+    setLibraryButtons();
+  } catch (err) {
+    showToast(err.message || 'Could not load saved analysis.');
+  }
+}
+
+async function deleteSelectedSavedAnalysis() {
+  if (!currentSavedSelection) return;
+  const selected = currentSavedSelection;
+  if (!window.confirm(`Delete "${selected.name}" and its saved audio/stems?`)) return;
+
+  const button = document.getElementById('deleteSavedBtn');
+  button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/saved-analyses/${encodeURIComponent(selected.id)}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Delete failed: ${response.status}`);
+    }
+    currentSavedSelection = null;
+    document.getElementById('savedDetail').innerHTML = '<div class="saved-item-meta">Saved analysis deleted.</div>';
+    showToast('Deleted saved analysis.');
+    await refreshSavedAnalyses(true);
+  } catch (err) {
+    showToast(err.message || 'Delete failed.');
+    setLibraryButtons();
+  }
+}
+
+function renderModalMoodBars(avgMood) {
+  return Object.keys(MOOD_COLORS).map(mood => {
+    const value = avgMood?.[mood] ?? 0;
+    const pct = Math.round(value * 100);
+    return `
+      <div class="mood-bar-row">
+        <div class="mood-bar-label">${mood}</div>
+        <div class="mood-bar-track">
+          <div class="mood-bar-fill" style="width:${pct}%;background:${MOOD_COLORS[mood]}"></div>
+        </div>
+        <div class="mood-bar-pct">${pct}%</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderSavedDetail(item) {
+  const summary = item.summary || {};
+  const features = summary.average_features || {};
+  const stemNames = Object.keys(item.stems || {});
+  document.getElementById('savedDetail').innerHTML = `
+    <div class="detail-title">${escapeHtml(item.name)}</div>
+    <div class="detail-meta">
+      ${escapeHtml(item.source_filename || 'saved audio')}<br>
+      ${escapeHtml(formatTime(item.duration || 0))} · ${item.num_chunks || 0} chunks · saved ${escapeHtml(item.created_at || '')}
+    </div>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <div class="detail-card-label">Valence</div>
+        <div class="detail-card-value">${Number(summary.average_valence || 0).toFixed(2)}</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card-label">Arousal</div>
+        <div class="detail-card-value">${Number(summary.average_arousal || 0).toFixed(2)}</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card-label">Mood</div>
+        <div class="detail-card-value">${escapeHtml(summary.dominant_mood || '—')}</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card-label">Tempo</div>
+        <div class="detail-card-value">${Math.round(features.tempo || 0)}</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card-label">Energy</div>
+        <div class="detail-card-value">${Number(features.energy || 0).toFixed(3)}</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card-label">Bright.</div>
+        <div class="detail-card-value">${Number(features.brightness || 0).toFixed(2)}</div>
+      </div>
+    </div>
+    <div class="section-label">Average Mood Distribution</div>
+    <div class="modal-mood-bars">${renderModalMoodBars(summary.average_mood)}</div>
+    <div class="section-label" style="margin-top:16px">Saved Stems</div>
+    <div class="stem-tags">
+      ${stemNames.length ? stemNames.map(name => `<span class="stem-tag">${escapeHtml(name)}</span>`).join('') : '<span class="saved-item-meta">No stems saved.</span>'}
+    </div>
+  `;
+}
+
+function normalizeStoredChunk(chunk, fallbackIndex) {
+  const mood = chunk.mood || {};
+  const dominant = chunk.dominant || Object.entries(mood).sort((a, b) => b[1] - a[1])[0]?.[0] || 'calm';
+  return {
+    index: chunk.index ?? fallbackIndex,
+    timeStart: chunk.timeStart ?? chunk.time_start ?? fallbackIndex * CHUNK_DUR,
+    timeEnd: chunk.timeEnd ?? chunk.time_end ?? (fallbackIndex + 1) * CHUNK_DUR,
+    valence: Number(chunk.valence ?? 0),
+    arousal: Number(chunk.arousal ?? 0),
+    mood,
+    dominant,
+    features: chunk.features || {},
+  };
+}
+
+function loadSelectedSavedAnalysis() {
+  if (!currentSavedSelection || !currentSavedSelection.chunks?.length) return;
+  const selected = currentSavedSelection;
+  resetApp(false);
+  currentSavedSelection = selected;
+  currentSourceFilename = selected.source_filename || selected.name;
+  currentDuration = selected.duration || 0;
+  analysisFilepath = selected.filepath || null;
+  lastStems = selected.stems || null;
+
+  document.getElementById('uploadOverlay').classList.add('hidden');
+  document.getElementById('btnReset').style.display = 'block';
+  document.getElementById('btnSave').style.display = 'block';
+  document.getElementById('progressFill').style.width = '100%';
+  setStatus('done');
+
+  const loaded = selected.chunks.map(normalizeStoredChunk);
+  for (const chunk of loaded) {
+    chunks.push(chunk);
+    currentChunkIndex = chunks.length - 1;
+    updateSidebar(chunk);
+    addTimelineItem(chunk);
+    updateVAPlot(chunk.valence, chunk.arousal, chunk.dominant);
+    updateBackground(chunk);
+  }
+
+  window.sendTimelineToOscBridge?.(chunks, analysisFilepath, lastStems);
+  setupAudio({ name: selected.name });
+  closeLibraryModal();
+  showToast('Loaded saved analysis.');
+}
+
+// =============================================
 // TouchDesigner OSC Bridge — WebSocket sender
-// Connects to osc_bridge.py running on ws://localhost:7001
+// Connects to osc_bridge.py running on ws://localhost:7011
 //
 // New flow:
 //   - After analysis completes, send one 'timeline' message with all chunks
@@ -1394,7 +2098,7 @@ function resetApp(showOverlay = true) {
   const statusEl = document.createElement('div');
   statusEl.id = 'oscStatus';
   statusEl.style.cssText = `
-    position: fixed; top: 14px; right: 16px;
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
     font-family: 'Space Mono', monospace; font-size: 9px;
     letter-spacing: 0.12em; text-transform: uppercase;
     padding: 4px 10px; border-radius: 20px;
@@ -1460,7 +2164,7 @@ function resetApp(showOverlay = true) {
   const MOODS = ['energetic', 'happy', 'calm', 'romantic', 'sad', 'angry'];
 
   // Send the full analyzed timeline in one batched payload
-  window.sendTimelineToOscBridge = function (chunkList, filepath) {
+  window.sendTimelineToOscBridge = function (chunkList, filepath, stems) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn('[MoodWave] OSC bridge not connected — skipping timeline send');
       return;
@@ -1484,6 +2188,10 @@ function resetApp(showOverlay = true) {
       dominant_idx: chunkList.map(c => Math.max(0, MOODS.indexOf(c.dominant))),
       mood: moodArrays,
     };
+
+    if (stems && typeof stems === 'object') {
+      payload.stems = stems;
+    }
 
     for (const c of chunkList) {
       for (const m of MOODS) moodArrays[m].push(c.mood?.[m] ?? 0);
@@ -1644,7 +2352,7 @@ function setupAudio(file) {
   document.getElementById('audioFilename').textContent = file.name;
   document.getElementById('audioBar').style.display = 'flex';
 
-  document.getElementById('progressWrap').addEventListener('click', (e) => {
+  document.getElementById('progressWrap').onclick = (e) => {
     if (!audioReady || !tdDuration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
@@ -1652,7 +2360,7 @@ function setupAudio(file) {
     if (tdPlaying) { tdTimeAtStart = tdCurrentTime; tdTimerStart = performance.now(); }
     window.sendTransportOSC?.('seek', tdCurrentTime);
     updateAudioProgress();
-  });
+  };
 
   // Local clock for progress-bar display only. No time sync sent to TD —
   // TD drives its own visuals off its audio playhead.
