@@ -16,8 +16,8 @@ backend/saved_analyses/
 
 # My stuff
 AGENTS.md
-my_stuff/
 CLAUDE.md
+my_stuff/
 
 # OS
 .DS_Store
