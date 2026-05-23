@@ -7,23 +7,23 @@ from features.dataset import build_loaders
 from training.engine import evaluate_loader, train_model
 
 SEARCH_SPACE = {
-    "lr": {"type": "categorical", "choices": [5e-5, 1e-4, 1e-3]},
-    "weight_decay": {"type": "continuous", "low": 1e-5, "high": 1e-2},
-    "conv1_filters": {"type": "categorical", "choices": [32, 64]},
-    "conv2_filters": {"type": "categorical", "choices": [64, 128]},
+    "lr": {"type": "categorical", "choices": [5e-5, 1e-4, 3e-4, 1e-3]},
+    "weight_decay": {"type": "continuous", "low": 1e-4, "high": 1e-1},
+    "conv1_filters": {"type": "categorical", "choices": [8, 16, 32]},
+    "conv2_filters": {"type": "categorical", "choices": [16, 32, 64]},
     "kernel_size": {"type": "categorical", "choices": [3, 5]},
-    "hidden_size": {"type": "categorical", "choices": [64, 128, 256]},
-    "dropout": {"type": "continuous", "low": 0.2, "high": 0.5},
+    "hidden_size": {"type": "categorical", "choices": [32, 64, 128]},
+    "dropout": {"type": "continuous", "low": 0.3, "high": 0.8},
 }
 
 NOMINAL_DEFAULTS = {
     "lr": 1e-4,
-    "weight_decay": 1e-4,
-    "conv1_filters": 32,
-    "conv2_filters": 64,
+    "weight_decay": 1e-2,
+    "conv1_filters": 16,
+    "conv2_filters": 32,
     "kernel_size": 3,
-    "hidden_size": 128,
-    "dropout": 0.3,
+    "hidden_size": 64,
+    "dropout": 0.7,
 }
 
 

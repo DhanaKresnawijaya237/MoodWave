@@ -1,8 +1,0 @@
-CNN-BiGRU multitask paper test metrics
-Valence MAE: 0.058271
-Valence R2: 0.896523
-Arousal MAE: 0.066544
-Arousal R2: 0.877937
-Quadrant Accuracy: 0.847282
-Quadrant Weighted F1: 0.846640
-Quadrant Macro F1: 0.807630

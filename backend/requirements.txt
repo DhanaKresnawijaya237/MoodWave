@@ -13,3 +13,5 @@ pyaudio
 transformers
 demucs
 torchcodec
+torchopenl3
+matplotlib

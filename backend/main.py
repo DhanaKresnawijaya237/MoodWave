@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from core.model import MoodCNNBiGRU
-from features.processor import MEL_N_MELS, extract_features_from_array, extract_mel_segments
+from features.processor import MEL_N_MELS, MEL_WINDOW_SECONDS, extract_features_from_array, extract_mel_segments
 from core.utils import valence_arousal_to_mood_distribution
 from core.separator import separate_stems
 
@@ -49,32 +49,57 @@ os.makedirs(SAVED_ANALYSES_DIR, exist_ok=True)
 _cnnbigru_cache = None
 
 
+def _stats_to_numpy(stats):
+    return {
+        key: value.detach().cpu().numpy() if torch.is_tensor(value) else value
+        for key, value in stats.items()
+    }
+
+
 def _load_cnnbigru():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = "models/cnn_bigru_multitask_paper.pth"
-    mel_stats_path = "models/cnn_bigru_multitask_paper_mel_stats.pkl"
+    model_path = "models/weights/cnn_bigru_multitask_paper.pth"
+    legacy_model_path = "models/cnn_bigru_multitask_paper.pth"
+    legacy_mel_stats_path = "models/cnn_bigru_multitask_paper_mel_stats.pkl"
+
+    if not os.path.exists(model_path) and os.path.exists(legacy_model_path):
+        model_path = legacy_model_path
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model checkpoint not found at {model_path}")
-    if not os.path.exists(mel_stats_path):
-        raise FileNotFoundError(f"Mel stats not found at {mel_stats_path}")
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-
-    # Support both raw state_dict checkpoints and wrapped
-    # {"state_dict": ..., "model_kwargs": ...} checkpoints
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
-        model_kwargs = checkpoint.get("model_kwargs", {})
+        model_kwargs = dict(checkpoint.get("model_kwargs", {}))
+        in_ch = checkpoint.get("in_channels", model_kwargs.pop("in_channels", 2))
+        model_kwargs.pop("in_channels", None)
+        use_qh = checkpoint.get("use_quadrant_head", False)
     else:
         state_dict = checkpoint
         model_kwargs = {}
+        in_ch = 2
+        use_qh = False
 
-    model = MoodCNNBiGRU(n_mels=MEL_N_MELS, **model_kwargs).to(device)
+    model = MoodCNNBiGRU(
+        n_mels=MEL_N_MELS,
+        in_channels=in_ch,
+        num_quadrant_classes=4 if use_qh else 0,
+        **model_kwargs,
+    ).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
-    mel_stats = joblib.load(mel_stats_path)
+    mel_stats = checkpoint.get("feature_stats") if isinstance(checkpoint, dict) else None
+    if mel_stats is None:
+        if not os.path.exists(legacy_mel_stats_path):
+            raise FileNotFoundError(
+                "Feature normalization stats are missing from the checkpoint. "
+                f"Retrain with train.py or keep the legacy stats file at {legacy_mel_stats_path}."
+            )
+        mel_stats = joblib.load(legacy_mel_stats_path)
+    else:
+        mel_stats = _stats_to_numpy(mel_stats)
     return model, mel_stats, device
 
 
@@ -84,9 +109,10 @@ def _predict_cnnbigru(y, sr):
         _cnnbigru_cache = _load_cnnbigru()
     model, mel_stats, device = _cnnbigru_cache
 
-    segments = extract_mel_segments(y, sr)
-    if segments is None:
+    extracted = extract_mel_segments(y, sr, return_times=True)
+    if extracted is None:
         return None
+    segments, start_times = extracted
 
     mean = mel_stats["mean"]
     std = mel_stats["std"]
@@ -94,16 +120,30 @@ def _predict_cnnbigru(y, sr):
 
     with torch.no_grad():
         x = torch.from_numpy(segments).to(device)
-        pred_v, pred_a = model(x)
-        valence = float(pred_v.mean().cpu().numpy())
-        arousal = float(pred_a.mean().cpu().numpy())
+        model_out = model(x)
+        pred_v, pred_a = model_out[0], model_out[1]
+        pred_v_np = pred_v.cpu().numpy()
+        pred_a_np = pred_a.cpu().numpy()
+        valence = float(pred_v_np.mean())
+        arousal = float(pred_a_np.mean())
 
-
+    timeline = []
+    for start_s, window_v, window_a in zip(start_times, pred_v_np, pred_a_np):
+        v = float(window_v)
+        a = float(window_a)
+        timeline.append({
+            "start": round(float(start_s), 2),
+            "end": round(float(start_s + MEL_WINDOW_SECONDS), 2),
+            "valence": round(v, 3),
+            "arousal": round(a, 3),
+            "distribution": valence_arousal_to_mood_distribution(v, a),
+        })
 
     return {
         "valence": round(valence, 3),
         "arousal": round(arousal, 3),
         "distribution": valence_arousal_to_mood_distribution(valence, arousal),
+        "timeline": timeline,
     }
 
 
@@ -321,6 +361,7 @@ async def analyze_stream(
                 "valence": prediction["valence"],
                 "arousal": prediction["arousal"],
                 "mood": prediction["distribution"],
+                "timeline": prediction["timeline"],
                 "encoder": "cnnbigru",
                 "features": features_info,
                 "total_duration": round(total_duration, 2),

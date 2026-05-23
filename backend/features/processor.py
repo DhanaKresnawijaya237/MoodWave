@@ -61,7 +61,12 @@ MEL_SAMPLE_RATE = 22_050
 MEL_N_FFT = 2_048
 MEL_HOP_LENGTH = 512
 MEL_N_MELS = 64
-MEL_SEGMENT_FRAMES = 64
+MEL_WINDOW_SECONDS = 0.5
+MEL_SEGMENT_FRAMES = max(1, int(round(MEL_WINDOW_SECONDS * MEL_SAMPLE_RATE / MEL_HOP_LENGTH)))
+MEL_N_MFCC = 13
+
+# Match DEAM dynamic annotations, which are sampled every 0.5 seconds.
+MEL_SEGMENT_HOP_S = 0.5
 
 
 def _slice_segment(log_mel, center_time_s):
@@ -79,8 +84,24 @@ def _slice_segment(log_mel, center_time_s):
     return log_mel[:, start:end]
 
 
-def _audio_to_segments(audio, samples, time_scale=1.0):
-    """Extract log-mel segments from audio with optional time scaling."""
+def _audio_to_segments(audio, samples, time_scale=1.0, segment_hop_s=None):
+    """Extract log-mel + MFCC segments from audio with optional time scaling.
+
+    Parameters
+    ----------
+    audio : np.ndarray
+        Audio waveform at MEL_SAMPLE_RATE.
+    samples : list of (timestamp_s, valence, arousal)
+        Dynamic annotations for this song.
+    time_scale : float
+        Time-stretch factor (1.0 = original).
+    segment_hop_s : float or None
+        Minimum seconds between extracted segment centers. If None,
+        defaults to MEL_SEGMENT_HOP_S.
+    """
+    if segment_hop_s is None:
+        segment_hop_s = MEL_SEGMENT_HOP_S
+
     mel = librosa.feature.melspectrogram(
         y=audio,
         sr=MEL_SAMPLE_RATE,
@@ -90,23 +111,37 @@ def _audio_to_segments(audio, samples, time_scale=1.0):
         power=2.0,
     )
     log_mel = librosa.power_to_db(mel + 1e-10, ref=np.max).astype(np.float32)
+    mfcc = librosa.feature.mfcc(S=mel, sr=MEL_SAMPLE_RATE, n_mfcc=MEL_N_MFCC).astype(np.float32)
 
     segments = []
     valence_targets = []
     arousal_targets = []
+    last_extracted_time = -float("inf")
+
     for timestamp_s, valence, arousal in samples:
         excerpt_time_s = float(timestamp_s) - AUDIO_OFFSET
         if excerpt_time_s < 0:
             continue
         scaled_time = excerpt_time_s * time_scale
+        center_time = scaled_time + (MEL_WINDOW_SECONDS * time_scale / 2.0)
 
-        segment = _slice_segment(log_mel, scaled_time)
-        if segment.shape[1] != MEL_SEGMENT_FRAMES:
+        if scaled_time - last_extracted_time < segment_hop_s - 1e-6:
             continue
 
-        segments.append(segment[None, :, :].astype(np.float16))
+        mel_seg = _slice_segment(log_mel, center_time)
+        mfcc_seg = _slice_segment(mfcc, center_time)
+        if mel_seg.shape[1] != MEL_SEGMENT_FRAMES or mfcc_seg.shape[1] != MEL_SEGMENT_FRAMES:
+            continue
+
+        # Pad MFCC from (n_mfcc, T) to (n_mels, T) with zeros
+        if mfcc_seg.shape[0] < MEL_N_MELS:
+            mfcc_seg = np.pad(mfcc_seg, ((0, MEL_N_MELS - mfcc_seg.shape[0]), (0, 0)), mode="constant")
+
+        stacked = np.stack([mel_seg, mfcc_seg], axis=0).astype(np.float16)
+        segments.append(stacked)
         valence_targets.append(float(valence))
         arousal_targets.append(float(arousal))
+        last_extracted_time = scaled_time
 
     return segments, valence_targets, arousal_targets
 
@@ -154,7 +189,7 @@ def _extract_song_segments(task, augment=False):
             all_arousal.extend(yas)
 
         if not all_segments:
-            empty_x = np.empty((0, 1, MEL_N_MELS, MEL_SEGMENT_FRAMES), dtype=np.float16)
+            empty_x = np.empty((0, 2, MEL_N_MELS, MEL_SEGMENT_FRAMES), dtype=np.float16)
             empty_y = np.empty((0,), dtype=np.float32)
             return sid, empty_x, empty_y, empty_y
 
@@ -168,7 +203,7 @@ def _extract_song_segments(task, augment=False):
         from tqdm import tqdm
 
         tqdm.write(f"  Skipped {sid}: {exc}")
-        empty_x = np.empty((0, 1, MEL_N_MELS, MEL_SEGMENT_FRAMES), dtype=np.float16)
+        empty_x = np.empty((0, 2, MEL_N_MELS, MEL_SEGMENT_FRAMES), dtype=np.float16)
         empty_y = np.empty((0,), dtype=np.float32)
         return sid, empty_x, empty_y, empty_y
 
@@ -241,7 +276,8 @@ def load_or_extract_base_segments(
 ):
     if cache_file is None:
         suffix = "aug" if augment_cache else "base"
-        cache_file = f"data/deam/cnn_bigru_multitask_segments_cache_{suffix}.npz"
+        # Include segment frames in filename so cache auto-invalidates on length changes
+        cache_file = f"data/deam/cnn_bigru_multitask_mfcc_segments_f{MEL_SEGMENT_FRAMES}_cache_{suffix}.npz"
 
     if os.path.exists(cache_file) and not rebuild_cache:
         print(f"Loading cached segments from {cache_file}...")
@@ -258,28 +294,57 @@ def load_or_extract_base_segments(
 
     worker_count = min(worker_count, len(tasks))
     print(f"  CPU prep workers: {worker_count}")
+    print(f"  Segment length: {MEL_SEGMENT_FRAMES} frames (~{MEL_SEGMENT_FRAMES * MEL_HOP_LENGTH / MEL_SAMPLE_RATE:.1f}s)")
+    print(f"  Segment hop: {MEL_SEGMENT_HOP_S}s")
     if augment_cache:
         print("  Audio augmentation enabled (pitch shift, time stretch, noise injection)")
 
-    segments = []
-    y_valence = []
-    y_arousal = []
-    track_ids = []
+    # Incremental chunk saving to avoid OOM with large segments
+    chunk_size = 200
+    chunk_counter = 0
+    chunk_segments = []
+    chunk_yv = []
+    chunk_ya = []
+    chunk_tids = []
+    total_segments = 0
+
+    # Also accumulate for final merge
+    all_segments = []
+    all_yv = []
+    all_ya = []
+    all_tids = []
+
     for sid, song_segments, song_yv, song_ya in _iter_song_results(tasks, worker_count, augment=augment_cache):
         if len(song_yv) == 0:
             continue
-        segments.append(song_segments)
-        y_valence.append(song_yv)
-        y_arousal.append(song_ya)
-        track_ids.append(np.full(len(song_yv), sid, dtype=np.int32))
+        all_segments.append(song_segments)
+        all_yv.append(song_yv)
+        all_ya.append(song_ya)
+        all_tids.append(np.full(len(song_yv), sid, dtype=np.int32))
+        total_segments += len(song_yv)
 
-    if not segments:
+        chunk_segments.append(song_segments)
+        chunk_yv.append(song_yv)
+        chunk_ya.append(song_ya)
+        chunk_tids.append(np.full(len(song_yv), sid, dtype=np.int32))
+
+        if len(chunk_segments) >= chunk_size:
+            _save_chunk(cache_file, chunk_counter, chunk_segments, chunk_yv, chunk_ya, chunk_tids)
+            chunk_counter += 1
+            chunk_segments, chunk_yv, chunk_ya, chunk_tids = [], [], [], []
+
+    # Flush remaining chunk
+    if chunk_segments:
+        _save_chunk(cache_file, chunk_counter, chunk_segments, chunk_yv, chunk_ya, chunk_tids)
+        chunk_counter += 1
+
+    if not all_segments:
         raise RuntimeError("No labeled mel segments were extracted.")
 
-    X = np.concatenate(segments, axis=0)
-    yv = np.concatenate(y_valence, axis=0)
-    ya = np.concatenate(y_arousal, axis=0)
-    track_ids = np.concatenate(track_ids, axis=0)
+    X = np.concatenate(all_segments, axis=0)
+    yv = np.concatenate(all_yv, axis=0)
+    ya = np.concatenate(all_ya, axis=0)
+    track_ids = np.concatenate(all_tids, axis=0)
 
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     np.savez_compressed(cache_file, X=X, yv=yv, ya=ya, track_ids=track_ids)
@@ -287,16 +352,28 @@ def load_or_extract_base_segments(
     return X, yv, ya, track_ids
 
 
-def extract_mel_segments(y, sr, segment_hop_s=1.0):
+def _save_chunk(cache_file, chunk_idx, segments, yvs, yas, tids):
+    base, ext = os.path.splitext(cache_file)
+    path = f"{base}_partial_{chunk_idx:04d}{ext}"
+    np.savez_compressed(
+        path,
+        X=np.concatenate(segments, axis=0),
+        yv=np.concatenate(yvs, axis=0),
+        ya=np.concatenate(yas, axis=0),
+        track_ids=np.concatenate(tids, axis=0),
+    )
+
+
+def extract_mel_segments(y, sr, segment_hop_s=MEL_SEGMENT_HOP_S, return_times=False):
     """Extract log-Mel segments from an audio signal for CNN-BiGRU inference.
 
-    Returns a numpy array of shape (N, 1, MEL_N_MELS, MEL_SEGMENT_FRAMES)
+    Returns a numpy array of shape (N, 2, MEL_N_MELS, MEL_SEGMENT_FRAMES)
     or None if the audio is too short.
     """
     if sr != MEL_SAMPLE_RATE:
         y = librosa.resample(y, orig_sr=sr, target_sr=MEL_SAMPLE_RATE)
 
-    min_samples = MEL_SEGMENT_FRAMES * MEL_HOP_LENGTH
+    min_samples = max(1, MEL_SEGMENT_FRAMES * MEL_HOP_LENGTH)
     if len(y) < min_samples:
         return None
 
@@ -309,21 +386,35 @@ def extract_mel_segments(y, sr, segment_hop_s=1.0):
         power=2.0,
     )
     log_mel = librosa.power_to_db(mel + 1e-10, ref=np.max).astype(np.float32)
+    mfcc = librosa.feature.mfcc(S=mel, sr=MEL_SAMPLE_RATE, n_mfcc=MEL_N_MFCC).astype(np.float32)
 
     duration_s = len(y) / MEL_SAMPLE_RATE
     segments = []
-    for center in np.arange(segment_hop_s, duration_s, segment_hop_s):
-        seg = _slice_segment(log_mel, center)
-        if seg.shape[1] == MEL_SEGMENT_FRAMES:
-            segments.append(seg[None, :, :])
+    start_times = []
+    for start_s in np.arange(0.0, duration_s, segment_hop_s):
+        center = start_s + MEL_WINDOW_SECONDS / 2.0
+        mel_seg = _slice_segment(log_mel, center)
+        mfcc_seg = _slice_segment(mfcc, center)
+        if mel_seg.shape[1] == MEL_SEGMENT_FRAMES and mfcc_seg.shape[1] == MEL_SEGMENT_FRAMES:
+            if mfcc_seg.shape[0] < MEL_N_MELS:
+                mfcc_seg = np.pad(mfcc_seg, ((0, MEL_N_MELS - mfcc_seg.shape[0]), (0, 0)), mode="constant")
+            segments.append(np.stack([mel_seg, mfcc_seg], axis=0))
+            start_times.append(float(start_s))
 
     if not segments:
         center = duration_s / 2
-        seg = _slice_segment(log_mel, center)
-        if seg.shape[1] == MEL_SEGMENT_FRAMES:
-            segments.append(seg[None, :, :])
+        mel_seg = _slice_segment(log_mel, center)
+        mfcc_seg = _slice_segment(mfcc, center)
+        if mel_seg.shape[1] == MEL_SEGMENT_FRAMES and mfcc_seg.shape[1] == MEL_SEGMENT_FRAMES:
+            if mfcc_seg.shape[0] < MEL_N_MELS:
+                mfcc_seg = np.pad(mfcc_seg, ((0, MEL_N_MELS - mfcc_seg.shape[0]), (0, 0)), mode="constant")
+            segments.append(np.stack([mel_seg, mfcc_seg], axis=0))
+            start_times.append(max(0.0, float(center - MEL_WINDOW_SECONDS / 2.0)))
 
     if not segments:
         return None
 
-    return np.stack(segments, axis=0).astype(np.float32)
+    stacked = np.stack(segments, axis=0).astype(np.float32)
+    if return_times:
+        return stacked, np.array(start_times, dtype=np.float32)
+    return stacked

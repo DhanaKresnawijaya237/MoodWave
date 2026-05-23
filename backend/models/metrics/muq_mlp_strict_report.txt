@@ -1,0 +1,17 @@
+MuQ-MLP strict test metrics
+Valence MAE: 0.131116
+Valence R2: 0.525459
+Arousal MAE: 0.127129
+Arousal R2: 0.667639
+Quadrant Accuracy: 0.635909
+Quadrant Weighted F1: 0.613600
+Quadrant Macro F1: 0.544811
+
+Track-level (per-song averaged) metrics:
+Track Valence MAE: 0.111847
+Track Valence R2: 0.600424
+Track Arousal MAE: 0.103696
+Track Arousal R2: 0.764026
+Track Quadrant Accuracy: 0.686347
+Track Quadrant Weighted F1: 0.660977
+Track Quadrant Macro F1: 0.560861
