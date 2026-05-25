@@ -38,7 +38,7 @@ from training.helpers import (
     train_sequence_model,
     train_vector_model,
 )
-from training.lso import LSOSearch
+from training.lso import LSOSearch, MuQLSOSearch
 
 try:
     from training.logger import MetricsLogger
@@ -210,7 +210,11 @@ def _openl3_mlp(data, args):
 
 
 def _muq_mlp(data, args):
-    return MoodMuQMLP(input_dim=data.input_dim, hidden_dims=(512, 256), dropout=0.3)
+    return MoodMuQMLP(
+        input_dim=data.input_dim,
+        hidden_dims=getattr(args, "hidden_dims", (512, 256)),
+        dropout=getattr(args, "dropout", 0.3),
+    )
 
 
 def _clap_mlp(data, args):
@@ -218,7 +222,12 @@ def _clap_mlp(data, args):
 
 
 def _sequence_bigru(data, args):
-    return MoodMuQBiGRU(input_dim=data.input_dim, hidden_size=128, num_layers=2, dropout=0.5)
+    return MoodMuQBiGRU(
+        input_dim=data.input_dim,
+        hidden_size=getattr(args, "hidden_size", 128),
+        num_layers=getattr(args, "num_layers", 2),
+        dropout=getattr(args, "dropout", 0.5),
+    )
 
 
 ENCODERS = {
@@ -315,8 +324,8 @@ def _resolve_experiment(args, parser):
 
     if args.augment and classifier.feature_kind != "mel_segment":
         parser.error("--augment only applies to --encoder mel --classifier cnn-bigru")
-    if args.use_lso and args.classifier != "cnn-bigru":
-        parser.error("--use-lso only applies to --encoder mel --classifier cnn-bigru")
+    if args.use_lso and (args.encoder, args.classifier) not in {("mel", "cnn-bigru"), ("muq", "mlp"), ("muq", "bigru")}:
+        parser.error("--use-lso only applies to mel+cnn-bigru, muq+mlp, or muq+bigru")
     if args.use_quadrant_head and args.classifier != "cnn-bigru":
         parser.error("--use-quadrant-head only applies to --encoder mel --classifier cnn-bigru")
 
@@ -336,6 +345,20 @@ def _resolve_experiment(args, parser):
         args.conv1_filters = 16 if args.conv1_filters is None else args.conv1_filters
         args.conv2_filters = 32 if args.conv2_filters is None else args.conv2_filters
         args.hidden_size = 64 if args.hidden_size is None else args.hidden_size
+    elif args.encoder == "muq" and args.classifier == "mlp":
+        args.dropout = 0.3 if args.dropout is None else args.dropout
+        args.hidden_dims = (512, 256)
+    elif args.encoder == "muq" and args.classifier == "bigru":
+        args.dropout = 0.5 if args.dropout is None else args.dropout
+        args.hidden_size = 128 if args.hidden_size is None else args.hidden_size
+        args.num_layers = 2 if args.num_layers is None else args.num_layers
+
+    if args.encoder == "muq":
+        args.lso_pop_size = 8 if args.lso_pop_size is None else args.lso_pop_size
+        args.lso_iterations = 10 if args.lso_iterations is None else args.lso_iterations
+        args.lso_eval_epochs = 5 if args.lso_eval_epochs is None else args.lso_eval_epochs
+        args.lso_eval_patience = 3 if args.lso_eval_patience is None else args.lso_eval_patience
+    else:
         args.lso_pop_size = 15 if args.lso_pop_size is None else args.lso_pop_size
         args.lso_iterations = 30 if args.lso_iterations is None else args.lso_iterations
         args.lso_eval_epochs = 10 if args.lso_eval_epochs is None else args.lso_eval_epochs
@@ -368,7 +391,7 @@ def parse_args(argv=None):
 
     parser.add_argument("--augment", action="store_true", help="Enable mel audio augmentation during cache extraction.")
     parser.add_argument("--use-quadrant-head", action="store_true", help="Add a 4-class auxiliary head for mel CNN-BiGRU.")
-    parser.add_argument("--use-lso", action="store_true", help="Run Lion Swarm Optimization before mel CNN-BiGRU training.")
+    parser.add_argument("--use-lso", action="store_true", help="Run Lion Swarm Optimization before supported training runs.")
     parser.add_argument("--lso-pop-size", type=int, default=None)
     parser.add_argument("--lso-iterations", type=int, default=None)
     parser.add_argument("--lso-eval-epochs", type=int, default=None, help="Epochs per LSO candidate evaluation.")
@@ -376,7 +399,8 @@ def parse_args(argv=None):
     parser.add_argument("--dropout", type=float, default=None, help="Mel CNN-BiGRU dropout rate.")
     parser.add_argument("--conv1-filters", type=int, default=None, help="Mel CNN layer 1 filter count.")
     parser.add_argument("--conv2-filters", type=int, default=None, help="Mel CNN layer 2 filter count.")
-    parser.add_argument("--hidden-size", type=int, default=None, help="Mel BiGRU hidden size.")
+    parser.add_argument("--hidden-size", type=int, default=None, help="BiGRU hidden size.")
+    parser.add_argument("--num-layers", type=int, default=None, help="MuQ BiGRU layer count.")
     return _resolve_experiment(parser.parse_args(argv), parser)
 
 
@@ -413,6 +437,48 @@ def _checkpoint_path_for_read(model_path):
 
 def _checkpoint_stats(torch, stats):
     return {key: torch.as_tensor(value) for key, value in stats.items()}
+
+
+def _apply_model_kwargs(args, model_kwargs):
+    for key, value in dict(model_kwargs or {}).items():
+        setattr(args, key, tuple(value) if key == "hidden_dims" else value)
+
+
+def _muq_model_kwargs(args):
+    if args.encoder != "muq":
+        return None
+    if args.classifier == "mlp":
+        return {
+            "hidden_dims": tuple(args.hidden_dims),
+            "dropout": args.dropout,
+        }
+    if args.classifier == "bigru":
+        return {
+            "hidden_size": args.hidden_size,
+            "num_layers": args.num_layers,
+            "dropout": args.dropout,
+        }
+    return None
+
+
+def _muq_checkpoint_extra(args):
+    model_kwargs = _muq_model_kwargs(args)
+    return {"model_kwargs": model_kwargs} if model_kwargs is not None else None
+
+
+def _muq_lso_model_factory(data, args):
+    if args.classifier == "mlp":
+        return lambda params: MoodMuQMLP(
+            input_dim=data.input_dim,
+            hidden_dims=tuple(params["hidden_dims"]),
+            dropout=params["dropout"],
+        )
+    return lambda params: MoodMuQBiGRU(
+        input_dim=data.input_dim,
+        hidden_size=params["hidden_size"],
+        num_layers=params["num_layers"],
+        dropout=params["dropout"],
+    )
 
 
 def _prepare_features(args, encoder):
@@ -527,6 +593,7 @@ def _run_vector_sample_regression(args, data, torch):
         if not os.path.exists(read_path):
             raise FileNotFoundError(f"Missing checkpoint at {model_path}")
         checkpoint = torch.load(read_path, map_location=device)
+        _apply_model_kwargs(args, checkpoint.get("model_kwargs"))
         model = model_spec.model_factory(data, args).to(device)
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
@@ -534,6 +601,28 @@ def _run_vector_sample_regression(args, data, torch):
         metrics_logger = None
         if model_spec.log_metrics:
             metrics_logger = _metrics_logger(metrics_path)
+
+        if args.use_lso and args.encoder == "muq":
+            print("\n=== Running MuQ Lion Swarm Optimization (LSO) ===")
+            lso = MuQLSOSearch(
+                args.classifier,
+                data,
+                device,
+                model_factory=_muq_lso_model_factory(data, args),
+                pop_size=args.lso_pop_size,
+                iterations=args.lso_iterations,
+                eval_epochs=args.lso_eval_epochs,
+                eval_patience=args.lso_eval_patience,
+                batch_size=args.batch_size,
+                seed=SEED,
+            )
+            best_params = lso.optimize()
+            print("\n=== Best MuQ hyperparameters from LSO ===")
+            for key, value in best_params.items():
+                print(f"  {key}: {value}")
+            _apply_model_kwargs(args, best_params)
+            args.lr = best_params["lr"]
+            args.weight_decay = best_params["weight_decay"]
 
         model = train_vector_model(
             data.X_train,
@@ -553,7 +642,7 @@ def _run_vector_sample_regression(args, data, torch):
             track_ids_val=data.track_ids_val,
             metrics_logger=metrics_logger,
         )
-        _save_checkpoint(torch, model, model_path, args, data)
+        _save_checkpoint(torch, model, model_path, args, data, model_kwargs=_muq_checkpoint_extra(args))
         print(f"\nSaved {args.experiment_label} checkpoint: {model_path}")
         print(f"Embedded {data.stats_label} in checkpoint")
 
@@ -581,6 +670,7 @@ def _run_sequence_window_regression(args, data, torch):
                 "This MuQ-BiGRU checkpoint was saved for the old local-frame sequence model. "
                 "Retrain with `python train.py --encoder muq --classifier bigru --split strict`."
             )
+        _apply_model_kwargs(args, checkpoint.get("model_kwargs"))
         model = model_spec.model_factory(data, args).to(device)
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
@@ -588,6 +678,28 @@ def _run_sequence_window_regression(args, data, torch):
         metrics_logger = None
         if model_spec.log_metrics:
             metrics_logger = _metrics_logger(metrics_path)
+
+        if args.use_lso and args.encoder == "muq":
+            print("\n=== Running MuQ Lion Swarm Optimization (LSO) ===")
+            lso = MuQLSOSearch(
+                args.classifier,
+                data,
+                device,
+                model_factory=_muq_lso_model_factory(data, args),
+                pop_size=args.lso_pop_size,
+                iterations=args.lso_iterations,
+                eval_epochs=args.lso_eval_epochs,
+                eval_patience=args.lso_eval_patience,
+                batch_size=args.batch_size,
+                seed=SEED,
+            )
+            best_params = lso.optimize()
+            print("\n=== Best MuQ hyperparameters from LSO ===")
+            for key, value in best_params.items():
+                print(f"  {key}: {value}")
+            _apply_model_kwargs(args, best_params)
+            args.lr = best_params["lr"]
+            args.weight_decay = best_params["weight_decay"]
 
         model = train_sequence_model(
             data.X_train,
@@ -608,7 +720,7 @@ def _run_sequence_window_regression(args, data, torch):
             weight_decay=args.weight_decay,
             metrics_logger=metrics_logger,
         )
-        _save_checkpoint(torch, model, model_path, args, data)
+        _save_checkpoint(torch, model, model_path, args, data, model_kwargs=_muq_checkpoint_extra(args))
         print(f"\nSaved {args.experiment_label} checkpoint: {model_path}")
         print(f"Embedded {data.stats_label} in checkpoint")
 

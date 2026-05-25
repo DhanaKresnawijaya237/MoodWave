@@ -1,10 +1,12 @@
-"""Lion Swarm Optimization (LSO) for CNN-BiGRU hyperparameter tuning."""
+"""Lion Swarm Optimization (LSO) hyperparameter tuning."""
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from features.dataset import build_loaders 
 from training.engine import evaluate_loader, train_model
+from training.helpers import evaluate_sequence_model, evaluate_vector_model, train_sequence_model, train_vector_model
 
 SEARCH_SPACE = {
     "lr": {"type": "categorical", "choices": [5e-5, 1e-4, 3e-4, 1e-3]},
@@ -215,3 +217,199 @@ class LSOSearch:
             )
 
         return _decode(positions[0])
+
+
+MUQ_MLP_SEARCH_SPACE = {
+    "lr": {"type": "categorical", "choices": [3e-4, 1e-3, 3e-3]},
+    "weight_decay": {"type": "categorical", "choices": [1e-5, 1e-4, 1e-3]},
+    "batch_size": {"type": "categorical", "choices": [32, 64, 128]},
+    "hidden_dims": {"type": "categorical", "choices": [(256, 128), (512, 256), (512, 256, 128)]},
+    "dropout": {"type": "continuous", "low": 0.1, "high": 0.5},
+}
+
+MUQ_BIGRU_SEARCH_SPACE = {
+    "lr": {"type": "categorical", "choices": [3e-4, 1e-3, 3e-3]},
+    "weight_decay": {"type": "categorical", "choices": [1e-5, 1e-4, 1e-3]},
+    "batch_size": {"type": "categorical", "choices": [8, 16, 32]},
+    "hidden_size": {"type": "categorical", "choices": [64, 128, 256]},
+    "num_layers": {"type": "categorical", "choices": [1, 2]},
+    "dropout": {"type": "continuous", "low": 0.1, "high": 0.6},
+}
+
+
+def _encode_space(param_dict, search_space):
+    vec = []
+    for key, spec in search_space.items():
+        val = param_dict[key]
+        if spec["type"] == "categorical":
+            try:
+                idx = spec["choices"].index(val)
+            except ValueError:
+                idx = 0
+            n = len(spec["choices"])
+            vec.append(idx / (n - 1) if n > 1 else 0.5)
+        else:
+            low, high = spec["low"], spec["high"]
+            vec.append((val - low) / (high - low))
+    return np.array(vec, dtype=np.float32)
+
+
+def _decode_space(vec, search_space):
+    param_dict = {}
+    for i, (key, spec) in enumerate(search_space.items()):
+        v = float(np.clip(vec[i], 0.0, 1.0))
+        if spec["type"] == "categorical":
+            n = len(spec["choices"])
+            idx = int(round(v * (n - 1))) if n > 1 else 0
+            param_dict[key] = spec["choices"][idx]
+        else:
+            param_dict[key] = v * (spec["high"] - spec["low"]) + spec["low"]
+    return param_dict
+
+
+class MuQLSOSearch:
+    def __init__(
+        self,
+        mode,
+        data,
+        device,
+        model_factory,
+        pop_size=8,
+        iterations=10,
+        pride_ratio=0.7,
+        rho=0.2,
+        gamma=0.7,
+        mutation_rate=0.05,
+        eval_epochs=5,
+        eval_patience=3,
+        batch_size=32,
+        seed=42,
+    ):
+        if mode not in {"mlp", "bigru"}:
+            raise ValueError(f"Unsupported MuQ LSO mode: {mode}")
+        self.mode = mode
+        self.data = data
+        self.device = device
+        self.model_factory = model_factory
+        self.pop_size = pop_size
+        self.iterations = iterations
+        self.pride_ratio = pride_ratio
+        self.rho = rho
+        self.gamma = gamma
+        self.mutation_rate = mutation_rate
+        self.eval_epochs = eval_epochs
+        self.eval_patience = eval_patience
+        self.batch_size = batch_size
+        self.rng = np.random.default_rng(seed)
+        self.search_space = MUQ_MLP_SEARCH_SPACE if mode == "mlp" else MUQ_BIGRU_SEARCH_SPACE
+        self.n_dims = len(self.search_space)
+
+    def _evaluate_mlp(self, params):
+        model = train_vector_model(
+            self.data.X_train,
+            self.data.yv_train,
+            self.data.ya_train,
+            self.data.X_val,
+            self.data.yv_val,
+            self.data.ya_val,
+            self.device,
+            model_factory=lambda: self.model_factory(params),
+            desc="MuQ-MLP LSO eval",
+            epochs=self.eval_epochs,
+            patience=self.eval_patience,
+            lr=params["lr"],
+            batch_size=params["batch_size"],
+            weight_decay=params["weight_decay"],
+            quiet=True,
+        )
+        loss_fn = nn.MSELoss()
+        from torch.utils.data import DataLoader
+        from training.helpers import RegressionDataset
+
+        val_ds = RegressionDataset(self.data.X_val, self.data.yv_val, self.data.ya_val)
+        val_loader = DataLoader(val_ds, batch_size=params["batch_size"] * 2, shuffle=False, pin_memory=torch.cuda.is_available())
+        metrics = evaluate_vector_model(model, val_loader, self.device, loss_fn=loss_fn)
+        return -0.5 * (metrics["valence_r2"] + metrics["arousal_r2"])
+
+    def _evaluate_bigru(self, params):
+        model = train_sequence_model(
+            self.data.X_train,
+            self.data.lengths_train,
+            self.data.yv_train,
+            self.data.ya_train,
+            self.data.X_val,
+            self.data.lengths_val,
+            self.data.yv_val,
+            self.data.ya_val,
+            self.device,
+            model_factory=lambda: self.model_factory(params),
+            desc="MuQ-BiGRU LSO eval",
+            epochs=self.eval_epochs,
+            patience=self.eval_patience,
+            lr=params["lr"],
+            batch_size=params["batch_size"],
+            weight_decay=params["weight_decay"],
+            quiet=True,
+        )
+        loss_fn = nn.MSELoss()
+        from torch.utils.data import DataLoader
+        from training.helpers import SequenceRegressionDataset
+
+        val_ds = SequenceRegressionDataset(self.data.X_val, self.data.lengths_val, self.data.yv_val, self.data.ya_val)
+        val_loader = DataLoader(val_ds, batch_size=params["batch_size"] * 2, shuffle=False, pin_memory=torch.cuda.is_available())
+        metrics = evaluate_sequence_model(model, val_loader, self.device, loss_fn=loss_fn)
+        return -0.5 * (metrics["valence_r2"] + metrics["arousal_r2"])
+
+    def _evaluate(self, params):
+        fitness = self._evaluate_mlp(params) if self.mode == "mlp" else self._evaluate_bigru(params)
+        printable = ", ".join(f"{key}={value}" for key, value in params.items())
+        print(f"    MuQ LSO eval: {printable} -> avg_r2={-fitness:.4f}")
+        return fitness
+
+    def optimize(self):
+        print(f"\n[MuQ LSO] Initializing {self.mode} population (M={self.pop_size}, dims={self.n_dims})")
+        positions = self.rng.random((self.pop_size, self.n_dims))
+        positions_prev = positions.copy()
+        fitness = np.array([self._evaluate(_decode_space(positions[i], self.search_space)) for i in range(self.pop_size)])
+
+        for t in range(self.iterations):
+            sorted_idx = np.argsort(fitness)
+            positions = positions[sorted_idx]
+            positions_prev = positions_prev[sorted_idx]
+            fitness = fitness[sorted_idx]
+
+            n_prides = max(1, int(self.pop_size * self.pride_ratio))
+            prides = positions[:n_prides]
+            prides_prev = positions_prev[:n_prides]
+            pride_best = prides[0].copy()
+
+            delta = prides - prides_prev
+            new_prides = np.clip(pride_best + self.rho * self.rng.random(prides.shape) + self.gamma * delta, 0.0, 1.0)
+            new_prides_fitness = np.array([
+                self._evaluate(_decode_space(new_prides[i], self.search_space)) for i in range(n_prides)
+            ])
+
+            n_offspring = self.pop_size
+            p1 = self.rng.integers(0, n_prides, size=n_offspring)
+            p2 = self.rng.integers(0, n_prides, size=n_offspring)
+            offspring = np.clip(
+                0.5 * (prides[p1] + prides[p2])
+                + self.mutation_rate * self.rng.standard_normal((n_offspring, self.n_dims)),
+                0.0,
+                1.0,
+            )
+            offspring_fitness = np.array([
+                self._evaluate(_decode_space(offspring[i], self.search_space)) for i in range(n_offspring)
+            ])
+
+            union_positions = np.vstack([positions, new_prides, offspring])
+            union_fitness = np.hstack([fitness, new_prides_fitness, offspring_fitness])
+            top_idx = np.argsort(union_fitness)[: self.pop_size]
+            positions_prev = positions.copy()
+            positions = union_positions[top_idx]
+            fitness = union_fitness[top_idx]
+
+            best_params = _decode_space(positions[0], self.search_space)
+            print(f"[MuQ LSO] Iteration {t + 1}/{self.iterations}, best avg_r2={-fitness[0]:.4f}, best={best_params}")
+
+        return _decode_space(positions[0], self.search_space)

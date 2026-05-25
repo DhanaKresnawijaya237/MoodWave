@@ -1,8 +1,8 @@
 MuQ-BiGRU strict test metrics
-Valence MAE: 0.124195
-Valence R2: 0.603324
-Arousal MAE: 0.119321
-Arousal R2: 0.680078
-Quadrant Accuracy: 0.674063
-Quadrant Weighted F1: 0.663282
-Quadrant Macro F1: 0.599196
+Valence MAE: 0.138417
+Valence R2: 0.512450
+Arousal MAE: 0.143818
+Arousal R2: 0.572260
+Quadrant Accuracy: 0.644070
+Quadrant Weighted F1: 0.614194
+Quadrant Macro F1: 0.537550
