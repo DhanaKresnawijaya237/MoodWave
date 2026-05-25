@@ -44,10 +44,18 @@ def set_seed(seed=42):
 
 
 def compute_mel_stats(X_train):
+    """Compute per-channel per-mel-bin mean and std across the training set.
+
+    Input shape: (N, C, n_mels, T)
+    Returns per-channel per-bin stats.
+    """
     train32 = X_train.astype(np.float32)
+    # Compute over N and T dimensions, leaving channels and n_mels
+    mean = train32.mean(axis=(0, 3), keepdims=True)  # shape (1, C, n_mels, 1)
+    std = train32.std(axis=(0, 3), keepdims=True)
     return {
-        "mean": float(train32.mean()),
-        "std": float(train32.std()),
+        "mean": mean.astype(np.float32),
+        "std": std.astype(np.float32),
     }
 
 
@@ -79,16 +87,26 @@ def denormalize_z(yv_z, ya_z, z_stats):
 
 
 def write_report(title, metrics, report_path=None):
-    lines = [
-        title,
-        f"Valence MAE: {metrics['valence_mae']:.6f}",
-        f"Valence R2: {metrics['valence_r2']:.6f}",
-        f"Arousal MAE: {metrics['arousal_mae']:.6f}",
-        f"Arousal R2: {metrics['arousal_r2']:.6f}",
-        f"Quadrant Accuracy: {metrics['quadrant_acc']:.6f}",
-        f"Quadrant Weighted F1: {metrics['quadrant_weighted_f1']:.6f}",
-        f"Quadrant Macro F1: {metrics['quadrant_macro_f1']:.6f}",
-    ]
+    lines = [title]
+    lines.append(f"Valence MAE: {metrics['valence_mae']:.6f}")
+    lines.append(f"Valence R2: {metrics['valence_r2']:.6f}")
+    lines.append(f"Arousal MAE: {metrics['arousal_mae']:.6f}")
+    lines.append(f"Arousal R2: {metrics['arousal_r2']:.6f}")
+    if "quadrant_loss" in metrics:
+        lines.append(f"Quadrant CE Loss: {metrics['quadrant_loss']:.6f}")
+    lines.append(f"Quadrant Accuracy: {metrics['quadrant_acc']:.6f}")
+    lines.append(f"Quadrant Weighted F1: {metrics['quadrant_weighted_f1']:.6f}")
+    lines.append(f"Quadrant Macro F1: {metrics['quadrant_macro_f1']:.6f}")
+    if "track_valence_mae" in metrics:
+        lines.append("")
+        lines.append("Track-level (per-song averaged) metrics:")
+        lines.append(f"Track Valence MAE: {metrics['track_valence_mae']:.6f}")
+        lines.append(f"Track Valence R2: {metrics['track_valence_r2']:.6f}")
+        lines.append(f"Track Arousal MAE: {metrics['track_arousal_mae']:.6f}")
+        lines.append(f"Track Arousal R2: {metrics['track_arousal_r2']:.6f}")
+        lines.append(f"Track Quadrant Accuracy: {metrics['track_quadrant_acc']:.6f}")
+        lines.append(f"Track Quadrant Weighted F1: {metrics['track_quadrant_weighted_f1']:.6f}")
+        lines.append(f"Track Quadrant Macro F1: {metrics['track_quadrant_macro_f1']:.6f}")
 
     print(f"\n{title}")
     for line in lines[1:]:
