@@ -105,7 +105,8 @@ Write-Host ""
 # 4. Open Browser
 # ---------------------------------------------------------------------------
 Write-ColorLine "[4/4] Opening browser..." "Yellow"
-$frontendUrl = "$BACKEND_URL/"
+$cacheBust = Get-Date -Format "yyyyMMddHHmmss"
+$frontendUrl = "$BACKEND_URL/?v=$cacheBust"
 try {
     $browserCmd = "start `"`" `"$frontendUrl`""
     Start-Process -FilePath "$env:ComSpec" -ArgumentList "/c", $browserCmd -WindowStyle Hidden

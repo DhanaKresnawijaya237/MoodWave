@@ -15,3 +15,5 @@ demucs
 torchcodec
 torchopenl3
 matplotlib
+muq
+tqdm

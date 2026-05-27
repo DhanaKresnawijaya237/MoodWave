@@ -12,6 +12,7 @@ import soundfile as sf
 TARGET_STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 DEMUCS_MODEL = "htdemucs_6s"
 TD_STEM_SAMPLE_RATE = 44_100
+DEMUCS_DEVICE_ENV = "MOODWAVE_DEMUCS_DEVICE"
 
 
 def _write_td_wav(output_path: str, audio: np.ndarray, sr: int, subtype: str = "PCM_16"):
@@ -48,18 +49,34 @@ def cleanup_old_stems(upload_dir: str) -> str:
     return stems_dir
 
 
-def _separate_with_api(input_path: str, output_dir: str, target_sr: int = 22050):
-    """
-    Use Demucs's native Python API with librosa/soundfile for I/O.
-    This bypasses torchaudio entirely, avoiding torchcodec/ffmpeg issues.
-    """
+def _clear_cuda(torch):
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except RuntimeError:
+            pass
+
+
+def _preferred_devices(torch):
+    requested = os.environ.get(DEMUCS_DEVICE_ENV, "auto").strip().lower()
+    if requested in {"cpu", "cuda"}:
+        if requested == "cuda" and not torch.cuda.is_available():
+            print("[Separator] CUDA requested but unavailable; using CPU.")
+            return ["cpu"]
+        return [requested]
+    return ["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"]
+
+
+def _separate_with_api_device(input_path: str, output_dir: str, target_sr: int, device_name: str):
     import torch
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
 
-    print("[Separator] Loading model...")
+    device = torch.device(device_name)
+    print(f"[Separator] Loading model on {device}...")
     model = get_model(DEMUCS_MODEL)
-    model.cpu()
+    model.to(device)
 
     print(f"[Separator] Loading audio (target sr={target_sr})...")
     wav, sr = librosa.load(input_path, sr=target_sr, mono=True)
@@ -72,20 +89,26 @@ def _separate_with_api(input_path: str, output_dir: str, target_sr: int = 22050)
     mean = ref.mean()
     std = ref.std() + 1e-8
     wav_tensor = (wav_tensor - mean) / std
+    mean_value = float(mean.item())
+    std_value = float(std.item())
 
-    print("[Separator] Running separation (this may take a while)...")
+    if device.type == "cuda":
+        name = torch.cuda.get_device_name(device)
+        print(f"[Separator] Running separation on CUDA ({name})...")
+    else:
+        print("[Separator] Running separation on CPU (this may take a while)...")
     with torch.no_grad():
         sources = apply_model(
             model,
             wav_tensor[None],   # add batch dim: (1, 2, samples)
-            device="cpu",
+            device=device,
             split=True,
             overlap=0.25,
             progress=False,
         )[0]                    # -> (num_sources, 2, samples)
 
-    # Denormalize
-    sources = sources * std + mean
+    # Move results back to CPU before saving and before releasing CUDA memory.
+    sources = sources.cpu() * std_value + mean_value
 
     # Save each stem as standard stereo PCM WAV for TouchDesigner.
     source_names = model.sources
@@ -97,7 +120,35 @@ def _separate_with_api(input_path: str, output_dir: str, target_sr: int = 22050)
         _write_td_wav(out_path, src_np, target_sr)
         source_paths[name] = out_path
 
+    del sources, wav_tensor, model
+    if device.type == "cuda":
+        _clear_cuda(torch)
     return source_paths
+
+
+def _separate_with_api(input_path: str, output_dir: str, target_sr: int = 22050):
+    """
+    Use Demucs's native Python API with librosa/soundfile for I/O.
+    This bypasses torchaudio entirely, avoiding torchcodec/ffmpeg issues.
+    """
+    import torch
+
+    last_cuda_exc = None
+    for device_name in _preferred_devices(torch):
+        try:
+            return _separate_with_api_device(input_path, output_dir, target_sr, device_name)
+        except RuntimeError as exc:
+            if device_name == "cuda":
+                last_cuda_exc = exc
+                print(f"[Separator] CUDA separation failed: {exc}")
+                print("[Separator] Releasing CUDA memory and retrying on CPU...")
+                _clear_cuda(torch)
+                continue
+            raise
+
+    if last_cuda_exc is not None:
+        raise last_cuda_exc
+    raise RuntimeError("No Demucs device was available.")
 
 
 def _separate_with_cli(input_path: str, output_dir: str, target_sr: int = 22050):

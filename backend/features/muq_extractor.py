@@ -169,13 +169,21 @@ def _build_tasks(dynamic):
     return tasks
 
 
-def _load_muq_model(model_name, device=None, infer_embed_dim=True):
+def _load_muq_model(model_name, device=None, infer_embed_dim=True, local_files_only=False):
     from muq import MuQ
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading MuQ model ({model_name}) on {device}...")
-    model = MuQ.from_pretrained(model_name).to(device).eval()
+    try:
+        model = MuQ.from_pretrained(model_name, local_files_only=local_files_only).to(device).eval()
+    except Exception as exc:
+        if local_files_only:
+            raise RuntimeError(
+                f"MuQ model '{model_name}' is not fully cached locally. "
+                f"Run `hf download {model_name}` once, then restart the backend."
+            ) from exc
+        raise
     embed_dim = None
     if infer_embed_dim:
         with torch.inference_mode():
@@ -194,6 +202,8 @@ def _run_muq_hidden(y, muq_model, device):
         output = muq_model(wav, output_hidden_states=True)
         hidden = output.last_hidden_state.squeeze(0).cpu().numpy().astype(np.float32)
     del wav, output
+    if getattr(device, "type", None) == "cuda":
+        _clear_memory()
     return hidden
 
 

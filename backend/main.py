@@ -6,7 +6,6 @@ import tempfile
 import uuid
 from datetime import datetime
 
-import joblib
 import librosa
 import numpy as np
 import soundfile as sf
@@ -15,8 +14,9 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from core.model import MoodCNNBiGRU
-from features.processor import MEL_N_MELS, MEL_WINDOW_SECONDS, extract_features_from_array, extract_mel_segments
+from core.model import MoodMuQBiGRU
+from features.muq_extractor import MUQ_SR, _load_muq_model, _run_muq_hidden, _window_frame_indices
+from features.processor import extract_features_from_array
 from core.utils import valence_arousal_to_mood_distribution
 from core.separator import separate_stems
 
@@ -32,10 +32,14 @@ app.add_middleware(
 CHUNK_DURATION = 10  # seconds
 MOODS = ["energetic", "happy", "calm", "romantic", "sad", "angry"]
 STEM_NAMES = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+MUQ_WINDOW_SECONDS = 0.5
+MUQ_EMBED_CHUNK_SECONDS = 10.0
+MUQ_MODEL_NAME = "OpenMuQ/MuQ-large-msd-iter"
 
 BASE_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
 FRONTEND_PATH = os.path.join(PROJECT_ROOT, "frontend", "moodwave.html")
+MUQ_BIGRU_CHECKPOINT = os.path.join(BASE_DIR, "models", "weights", "muq_bigru_strict.pth")
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -45,8 +49,8 @@ _latest_audio_path = CURRENT_AUDIO_PATH
 SAVED_ANALYSES_DIR = os.path.join(BASE_DIR, "saved_analyses")
 os.makedirs(SAVED_ANALYSES_DIR, exist_ok=True)
 
-# Lazy-loaded CNN-BiGRU cache
-_cnnbigru_cache = None
+# Lazy-loaded MuQ + BiGRU cache
+_muq_bigru_cache = None
 
 
 def _stats_to_numpy(stats):
@@ -56,94 +60,136 @@ def _stats_to_numpy(stats):
     }
 
 
-def _load_cnnbigru():
+def _load_muq_bigru():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = "models/weights/cnn_bigru_multitask_paper.pth"
-    legacy_model_path = "models/cnn_bigru_multitask_paper.pth"
-    legacy_mel_stats_path = "models/cnn_bigru_multitask_paper_mel_stats.pkl"
+    if not os.path.exists(MUQ_BIGRU_CHECKPOINT):
+        raise FileNotFoundError(f"MuQ-BiGRU checkpoint not found at {MUQ_BIGRU_CHECKPOINT}")
 
-    if not os.path.exists(model_path) and os.path.exists(legacy_model_path):
-        model_path = legacy_model_path
+    checkpoint = torch.load(MUQ_BIGRU_CHECKPOINT, map_location=device, weights_only=False)
+    if checkpoint.get("encoder") != "muq" or checkpoint.get("classifier") != "bigru":
+        raise RuntimeError(f"{MUQ_BIGRU_CHECKPOINT} is not a MuQ-BiGRU checkpoint")
+    if checkpoint.get("sample_unit") != "song":
+        raise RuntimeError("MuQ-BiGRU checkpoint must be trained with sample_unit='song'")
 
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model checkpoint not found at {model_path}")
+    stats = checkpoint.get("feature_stats")
+    if stats is None:
+        raise RuntimeError("MuQ-BiGRU checkpoint is missing embedded feature_stats")
+    stats = _stats_to_numpy(stats)
 
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-        model_kwargs = dict(checkpoint.get("model_kwargs", {}))
-        in_ch = checkpoint.get("in_channels", model_kwargs.pop("in_channels", 2))
-        model_kwargs.pop("in_channels", None)
-        use_qh = checkpoint.get("use_quadrant_head", False)
-    else:
-        state_dict = checkpoint
-        model_kwargs = {}
-        in_ch = 2
-        use_qh = False
-
-    model = MoodCNNBiGRU(
-        n_mels=MEL_N_MELS,
-        in_channels=in_ch,
-        num_quadrant_classes=4 if use_qh else 0,
+    model_kwargs = dict(checkpoint.get("model_kwargs") or {})
+    model = MoodMuQBiGRU(
+        input_dim=int(checkpoint.get("input_dim", 1024)),
         **model_kwargs,
     ).to(device)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
-    mel_stats = checkpoint.get("feature_stats") if isinstance(checkpoint, dict) else None
-    if mel_stats is None:
-        if not os.path.exists(legacy_mel_stats_path):
-            raise FileNotFoundError(
-                "Feature normalization stats are missing from the checkpoint. "
-                f"Retrain with train.py or keep the legacy stats file at {legacy_mel_stats_path}."
-            )
-        mel_stats = joblib.load(legacy_mel_stats_path)
-    else:
-        mel_stats = _stats_to_numpy(mel_stats)
-    return model, mel_stats, device
+    muq_model, _, muq_device = _load_muq_model(
+        MUQ_MODEL_NAME,
+        device=device,
+        infer_embed_dim=False,
+        local_files_only=True,
+    )
+    return {
+        "model": model,
+        "muq_model": muq_model,
+        "stats": stats,
+        "device": device,
+        "muq_device": muq_device,
+    }
 
 
-def _predict_cnnbigru(y, sr):
-    global _cnnbigru_cache
-    if _cnnbigru_cache is None:
-        _cnnbigru_cache = _load_cnnbigru()
-    model, mel_stats, device = _cnnbigru_cache
+def _predict_muq_bigru_timeline(audio_path):
+    global _muq_bigru_cache
+    if _muq_bigru_cache is None:
+        _muq_bigru_cache = _load_muq_bigru()
 
-    extracted = extract_mel_segments(y, sr, return_times=True)
-    if extracted is None:
-        return None
-    segments, start_times = extracted
+    cache = _muq_bigru_cache
+    y, _ = librosa.load(audio_path, sr=MUQ_SR, mono=True)
+    if len(y) == 0:
+        return []
 
-    mean = mel_stats["mean"]
-    std = mel_stats["std"]
-    segments = (segments.astype(np.float32) - mean) / (std + 1e-6)
+    duration_s = len(y) / MUQ_SR
+    embeddings = []
+    start_times = []
+    chunk_samples = max(int(MUQ_EMBED_CHUNK_SECONDS * MUQ_SR), int(MUQ_WINDOW_SECONDS * MUQ_SR))
+    print(
+        f"[MuQ-BiGRU] Extracting MuQ embeddings in {MUQ_EMBED_CHUNK_SECONDS:g}s chunks "
+        f"({MUQ_WINDOW_SECONDS:g}s timeline step)"
+    )
+
+    for chunk_start_sample in range(0, len(y), chunk_samples):
+        chunk_end_sample = min(chunk_start_sample + chunk_samples, len(y))
+        chunk_y = y[chunk_start_sample:chunk_end_sample]
+        if len(chunk_y) == 0:
+            continue
+
+        chunk_start_s = chunk_start_sample / MUQ_SR
+        chunk_end_s = chunk_end_sample / MUQ_SR
+        hidden = _run_muq_hidden(chunk_y, cache["muq_model"], cache["muq_device"])
+        frame_times = chunk_start_s + np.linspace(
+            0.0,
+            len(chunk_y) / MUQ_SR,
+            hidden.shape[0],
+            endpoint=False,
+            dtype=np.float32,
+        )
+
+        first_window_idx = int(np.floor((chunk_start_s + 1e-6) / MUQ_WINDOW_SECONDS))
+        last_window_idx = int(np.ceil((chunk_end_s - 1e-6) / MUQ_WINDOW_SECONDS))
+        for window_idx in range(first_window_idx, last_window_idx):
+            start_s = window_idx * MUQ_WINDOW_SECONDS
+            if start_s < chunk_start_s - 1e-6 or start_s >= chunk_end_s - 1e-6:
+                continue
+            end_s = min(start_s + MUQ_WINDOW_SECONDS, duration_s)
+            idx = _window_frame_indices(frame_times, start_s, end_s)
+            embeddings.append(hidden[idx].mean(axis=0).astype(np.float32))
+            start_times.append(float(start_s))
+
+        del hidden
+
+    if not embeddings:
+        return []
+
+    x = np.stack(embeddings, axis=0).astype(np.float32)
+    x = (x - cache["stats"]["mean"]) / cache["stats"]["std"]
 
     with torch.no_grad():
-        x = torch.from_numpy(segments).to(device)
-        model_out = model(x)
-        pred_v, pred_a = model_out[0], model_out[1]
-        pred_v_np = pred_v.cpu().numpy()
-        pred_a_np = pred_a.cpu().numpy()
-        valence = float(pred_v_np.mean())
-        arousal = float(pred_a_np.mean())
+        xb = torch.from_numpy(x).unsqueeze(0).to(cache["device"])
+        lengths = torch.tensor([len(x)], dtype=torch.long, device=cache["device"])
+        pred_v, pred_a = cache["model"](xb, lengths)
+        pred_v_np = pred_v[0, : len(x)].cpu().numpy()
+        pred_a_np = pred_a[0, : len(x)].cpu().numpy()
 
     timeline = []
     for start_s, window_v, window_a in zip(start_times, pred_v_np, pred_a_np):
         v = float(window_v)
         a = float(window_a)
         timeline.append({
-            "start": round(float(start_s), 2),
-            "end": round(float(start_s + MEL_WINDOW_SECONDS), 2),
+            "start": round(start_s, 2),
+            "end": round(min(start_s + MUQ_WINDOW_SECONDS, duration_s), 2),
             "valence": round(v, 3),
             "arousal": round(a, 3),
             "distribution": valence_arousal_to_mood_distribution(v, a),
         })
+    return timeline
 
+
+def _aggregate_muq_chunk(timeline, start_s, end_s):
+    windows = [
+        point for point in timeline
+        if float(point["start"]) < end_s and float(point["end"]) > start_s
+    ]
+    if not windows:
+        return None
+
+    valence = float(np.mean([point["valence"] for point in windows]))
+    arousal = float(np.mean([point["arousal"] for point in windows]))
     return {
         "valence": round(valence, 3),
         "arousal": round(arousal, 3),
         "distribution": valence_arousal_to_mood_distribution(valence, arousal),
-        "timeline": timeline,
+        "timeline": windows,
     }
 
 
@@ -275,7 +321,15 @@ def frontend():
     """Serve the MoodWave frontend for launcher-based startup."""
     if not os.path.exists(FRONTEND_PATH):
         raise HTTPException(status_code=404, detail="frontend/moodwave.html not found")
-    return FileResponse(FRONTEND_PATH, media_type="text/html")
+    return FileResponse(
+        FRONTEND_PATH,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/analyze-stream")
@@ -334,16 +388,30 @@ async def analyze_stream(
             yield f"data: {json.dumps({'status': 'separating', 'progress': 96, 'message': 'Stem separation skipped'})}\n\n"
 
         # Transition back to analyzing as chunk inference begins
-        yield f"data: {json.dumps({'status': 'analyzing', 'progress': 100, 'message': 'Analyzing mood timeline'})}\n\n"
+        yield f"data: {json.dumps({'status': 'analyzing', 'progress': 100, 'message': 'Extracting MuQ mood timeline'})}\n\n"
+        try:
+            mood_timeline = _predict_muq_bigru_timeline(audio_path)
+        except Exception as exc:
+            print(f"[MuQ-BiGRU] Mood inference failed: {exc}")
+            yield f"data: {json.dumps({'error': f'MuQ-BiGRU mood inference failed: {exc}'})}\n\n"
+            return
+        print(
+            f"[MuQ-BiGRU] Fine timeline ready: "
+            f"duration={total_duration:.2f}s points={len(mood_timeline)} step={MUQ_WINDOW_SECONDS:.3f}s"
+        )
+
+        yield f"data: {json.dumps({'status': 'analyzing', 'progress': 100, 'message': 'Analyzing mood chunks'})}\n\n"
 
         for i, start in enumerate(range(0, len(y), samples_per_chunk)):
             chunk = y[start : start + samples_per_chunk]
+            chunk_start_s = i * CHUNK_DURATION
+            chunk_end_s = min((i + 1) * CHUNK_DURATION, total_duration)
 
             # Skip chunks shorter than 5 seconds
             if len(chunk) < sr * 5:
                 continue
 
-            prediction = _predict_cnnbigru(chunk, sr)
+            prediction = _aggregate_muq_chunk(mood_timeline, chunk_start_s, chunk_end_s)
             if prediction is None:
                 continue
 
@@ -356,13 +424,13 @@ async def analyze_stream(
 
             result = {
                 "chunk": i,
-                "time_start": round(i * CHUNK_DURATION, 2),
-                "time_end": round(min((i + 1) * CHUNK_DURATION, total_duration), 2),
+                "time_start": round(chunk_start_s, 2),
+                "time_end": round(chunk_end_s, 2),
                 "valence": prediction["valence"],
                 "arousal": prediction["arousal"],
                 "mood": prediction["distribution"],
                 "timeline": prediction["timeline"],
-                "encoder": "cnnbigru",
+                "encoder": "muq-bigru",
                 "features": features_info,
                 "total_duration": round(total_duration, 2),
             }
@@ -370,7 +438,7 @@ async def analyze_stream(
             yield f"data: {json.dumps(result)}\n\n"
 
         # Signal completion (include stem paths if separation succeeded)
-        done_payload = {"done": True}
+        done_payload = {"done": True, "timeline": mood_timeline}
         if stems:
             done_payload["stems"] = {k: v.replace("\\", "/") for k, v in stems.items()}
         yield f"data: {json.dumps(done_payload)}\n\n"

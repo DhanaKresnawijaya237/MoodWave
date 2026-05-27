@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-store">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>MoodWave — Music Mood Visualizer</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap');
@@ -65,6 +68,20 @@
     letter-spacing: 0.08em;
     color: var(--text);
     display: flex; align-items: center; gap: 10px;
+    min-width: 0;
+  }
+  .header-song-title {
+    max-width: min(42vw, 460px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-left: 12px;
+    margin-left: 2px;
+    border-left: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: none;
   }
   .logo-dot {
     width: 8px; height: 8px; border-radius: 50%;
@@ -198,12 +215,6 @@
     font-family: var(--mono); font-size: 9px; color: var(--muted);
     letter-spacing: 0.06em; min-width: 80px; text-align: right; flex-shrink: 0;
   }
-  .audio-filename {
-    font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.3);
-    letter-spacing: 0.06em; max-width: 180px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
-  }
-
   /* Upload overlay */
   .upload-overlay {
     position: absolute; inset: 0;
@@ -570,7 +581,7 @@
     aspect-ratio: 1;
     position: relative;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     background: var(--bg3);
     overflow: hidden;
   }
@@ -804,7 +815,8 @@
   <header class="header">
     <div class="logo">
       <div class="logo-dot" id="logoDot"></div>
-      MOODWAVE
+      <span>MOODWAVE</span>
+      <span class="header-song-title" id="headerSongTitle"></span>
     </div>
     <div class="header-actions">
       <button class="btn compact" onclick="openLibraryModal()">Library</button>
@@ -847,7 +859,6 @@
       <!-- Audio player bar -->
       <div class="audio-bar" id="audioBar" style="display:none">
         <button class="audio-play-btn" id="playBtn" onclick="togglePlay()">▶</button>
-        <div class="audio-filename" id="audioFilename">—</div>
         <div class="audio-progress-wrap" id="progressWrap">
           <div class="audio-progress-fill" id="audioProgressFill"></div>
         </div>
@@ -978,6 +989,9 @@ const API_BASE = window.location.protocol.startsWith('http')
   ? window.location.origin
   : 'http://127.0.0.1:8000';
 
+const FRONTEND_BUILD = 'muq-fine-timeline-header-title-20260527-13';
+console.log('[MoodWave] Frontend build:', FRONTEND_BUILD);
+
 const MOOD_COLORS = {
   energetic: '#f5a623',
   happy:     '#f7e248',
@@ -1001,6 +1015,7 @@ const MOOD_CENTERS_CANVAS = {
 // State
 // =============================================
 let chunks = [];
+let fineTimeline = [];
 let currentChunkIndex = -1;
 let analysisFilepath = null;
 let animFrame = null;
@@ -1020,6 +1035,13 @@ let currentSavedSelection = null;
 let savedItems = [];
 let separationProgress = 0;
 let separationTimer = null;
+let vaHistory = [];
+let vaHighlightIdx = -1;
+let vaHighlightT = 0;
+let vaPlotCache = null;
+let vaDrawScheduled = false;
+let vaView = { minV: -1, maxV: 1, minA: -1, maxA: 1, zoomed: false };
+const FINE_TIMELINE_DUR = 0.5;
 
 // =============================================
 // Canvas setup
@@ -1037,6 +1059,7 @@ function resizeCanvas() {
   const vaWrap = vaCanvas.parentElement;
   vaCanvas.width = vaWrap.clientWidth;
   vaCanvas.height = vaWrap.clientHeight;
+  invalidateVAPlotCache();
 
   updateTDResInfo();
 }
@@ -1111,6 +1134,7 @@ async function handleFile(file) {
   resetApp(false);
   isAnalyzing = true;
   currentSourceFilename = file.name;
+  displaySongTitle(currentSourceFilename);
   currentDuration = 0;
   lastStems = null;
 
@@ -1148,17 +1172,33 @@ async function handleFile(file) {
         if (!line.startsWith('data: ')) continue;
         const data = JSON.parse(line.slice(6));
 
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
         if (data.done) {
           isAnalyzing = false;
           setStatus('done');
           document.getElementById('logoDot').classList.remove('active');
           document.getElementById('progressFill').style.width = '100%';
           lastStems = data.stems || null;
-          currentDuration = chunks.length ? chunks[chunks.length - 1].timeEnd : currentDuration;
+          if (Array.isArray(data.timeline) && data.timeline.length) {
+            rebuildFineTimeline(data.timeline);
+          }
+          ensureFineTimelineFromChunks();
+          updateVAViewFromTimeline(fineTimeline.length ? fineTimeline : chunks);
+          scheduleVAPlotDraw();
+          console.log(
+            '[MoodWave] Analysis complete:',
+            'chunks=', chunks.length,
+            'fine=', fineTimeline.length,
+            'doneTimeline=', Array.isArray(data.timeline) ? data.timeline.length : 0
+          );
+          currentDuration = currentDuration || (chunks.length ? chunks[chunks.length - 1].timeEnd : 0);
           setSeparatingOverlay(false);
           document.getElementById('btnSave').style.display = 'block';
-          // All chunks processed — ship the full timeline to TD, then show player
-          window.sendTimelineToOscBridge?.(chunks, analysisFilepath, data.stems);
+          // Ship the MuQ 0.5s timeline to TD; keep 10s chunks for UI summaries.
+          window.sendTimelineToOscBridge?.(fineTimeline.length ? fineTimeline : chunks, analysisFilepath, data.stems);
           setupAudio(file);
           break;
         }
@@ -1203,8 +1243,102 @@ async function handleFile(file) {
 // =============================================
 // Process each chunk from SSE
 // =============================================
+function dominantFromMood(mood) {
+  return Object.entries(mood || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || 'calm';
+}
+
+function displaySongTitle(filename) {
+  const el = document.getElementById('headerSongTitle');
+  if (!el) return;
+  const title = (filename || '').replace(/\.[^.]+$/, '').trim();
+  el.textContent = title;
+  el.title = title;
+}
+
+function appendFineTimeline(data, chunk) {
+  const rawTimeline = Array.isArray(data.timeline) ? data.timeline : [];
+  if (!rawTimeline.length) {
+    fineTimeline.push({
+      index: fineTimeline.length,
+      chunkIndex: chunk.index,
+      timeStart: chunk.timeStart,
+      timeEnd: chunk.timeEnd,
+      valence: chunk.valence,
+      arousal: chunk.arousal,
+      mood: chunk.mood,
+      dominant: chunk.dominant,
+      features: chunk.features,
+    });
+    return;
+  }
+
+  for (const point of rawTimeline) {
+    const mood = point.distribution || point.mood || chunk.mood || {};
+    const dominant = dominantFromMood(mood);
+    const timeStart = Number(point.start ?? point.timeStart ?? chunk.timeStart);
+    const timeEnd = Number(point.end ?? point.timeEnd ?? (timeStart + FINE_TIMELINE_DUR));
+    fineTimeline.push({
+      index: fineTimeline.length,
+      chunkIndex: chunk.index,
+      timeStart,
+      timeEnd,
+      valence: Number(point.valence ?? chunk.valence),
+      arousal: Number(point.arousal ?? chunk.arousal),
+      mood,
+      dominant,
+      features: chunk.features || {},
+    });
+  }
+}
+
+function chunkForTime(timeSeconds) {
+  if (!chunks.length) return null;
+  return chunks.find(chunk => timeSeconds >= chunk.timeStart && timeSeconds < chunk.timeEnd) || chunks[chunks.length - 1];
+}
+
+function rebuildFineTimeline(rawTimeline) {
+  if (!Array.isArray(rawTimeline) || !rawTimeline.length) return;
+  fineTimeline = [];
+  for (const point of rawTimeline) {
+    const timeStart = Number(point.start ?? point.timeStart ?? 0);
+    const timeEnd = Number(point.end ?? point.timeEnd ?? (timeStart + FINE_TIMELINE_DUR));
+    const chunk = chunkForTime(timeStart) || {};
+    const mood = point.distribution || point.mood || chunk.mood || {};
+    const dominant = dominantFromMood(mood);
+    fineTimeline.push({
+      index: fineTimeline.length,
+      chunkIndex: chunk.index ?? Math.floor(timeStart / CHUNK_DUR),
+      timeStart,
+      timeEnd,
+      valence: Number(point.valence ?? chunk.valence ?? 0),
+      arousal: Number(point.arousal ?? chunk.arousal ?? 0),
+      mood,
+      dominant,
+      features: chunk.features || {},
+    });
+  }
+  updateVAViewFromTimeline(fineTimeline);
+  invalidateVAPlotCache();
+  scheduleVAPlotDraw();
+}
+
+function ensureFineTimelineFromChunks() {
+  const expectedMinimum = chunks.length * 2;
+  if (fineTimeline.length >= expectedMinimum) return;
+  const hasChunkTimelines = chunks.some(chunk => Array.isArray(chunk.timeline) && chunk.timeline.length);
+  if (!hasChunkTimelines) return;
+
+  fineTimeline = [];
+  for (const chunk of chunks) {
+    appendFineTimeline({ timeline: chunk.timeline }, chunk);
+  }
+  updateVAViewFromTimeline(fineTimeline);
+  invalidateVAPlotCache();
+  scheduleVAPlotDraw();
+}
+
 function processChunk(data) {
-  const dominant = Object.entries(data.mood).sort((a,b) => b[1]-a[1])[0][0];
+  const dominant = dominantFromMood(data.mood);
   const chunk = {
     index: data.chunk,
     timeStart: data.time_start,
@@ -1214,9 +1348,11 @@ function processChunk(data) {
     mood: data.mood,
     dominant,
     features: data.features,
+    timeline: Array.isArray(data.timeline) ? data.timeline : [],
   };
 
   chunks.push(chunk);
+  appendFineTimeline(data, chunk);
   currentChunkIndex = chunks.length - 1;
 
   updateSidebar(chunk);
@@ -1444,45 +1580,189 @@ drawLoop();
 // =============================================
 // V-A 2D Plot
 // =============================================
-let vaHistory = [];
-let vaHighlightIdx = -1;     // which chunk is highlighted (playback mode)
-let vaHighlightT = 0;        // timestamp of last highlight jump (for pop animation)
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+const VA_CORNER_COLORS = {
+  angry: [255, 90, 80],
+  energetic: [245, 176, 58],
+  sad: [105, 135, 235],
+  calm: [78, 205, 196],
+};
+
+function vaMix(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function mixRgb(a, b, t) {
+  return [
+    vaMix(a[0], b[0], t),
+    vaMix(a[1], b[1], t),
+    vaMix(a[2], b[2], t),
+  ];
+}
+
+function vaColor(point, alpha = 1) {
+  // Color is absolute in V/A space, independent of the current zoom. A line
+  // that stays in the bottom-left quadrant should stay in the sad/cool family.
+  const valence = point?.valence ?? 0;
+  const arousal = point?.arousal ?? 0;
+  const contrast = value => {
+    const signed = Math.max(-1, Math.min(1, value));
+    return Math.sign(signed) * Math.pow(Math.abs(signed), 0.62);
+  };
+  const x = clamp01((contrast(valence) + 1) / 2);
+  const y = clamp01((contrast(arousal) + 1) / 2);
+  const low = mixRgb(VA_CORNER_COLORS.sad, VA_CORNER_COLORS.calm, x);
+  const high = mixRgb(VA_CORNER_COLORS.angry, VA_CORNER_COLORS.energetic, x);
+  const target = mixRgb(low, high, y);
+  const neutral = [150, 156, 174];
+  const distance = clamp01(Math.hypot(valence, arousal) / 0.75);
+  const colorAmount = clamp01(0.22 + Math.pow(distance, 0.62) * 0.78);
+  const rgb = mixRgb(neutral, target, colorAmount).map(v => Math.round(v));
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+}
+
+function invalidateVAPlotCache() {
+  vaPlotCache = null;
+}
+
+function resetVAView() {
+  vaView = { minV: -1, maxV: 1, minA: -1, maxA: 1, zoomed: false };
+  invalidateVAPlotCache();
+}
+
+function updateVAViewFromTimeline(timelineList) {
+  if (!Array.isArray(timelineList) || !timelineList.length) {
+    resetVAView();
+    return;
+  }
+
+  const vals = timelineList.map(p => Number(p.valence)).filter(Number.isFinite);
+  const aros = timelineList.map(p => Number(p.arousal)).filter(Number.isFinite);
+  if (!vals.length || !aros.length) {
+    resetVAView();
+    return;
+  }
+
+  let minV = Math.min(...vals);
+  let maxV = Math.max(...vals);
+  let minA = Math.min(...aros);
+  let maxA = Math.max(...aros);
+  const centerV = (minV + maxV) / 2;
+  const centerA = (minA + maxA) / 2;
+  const rangeV = Math.max(0.18, maxV - minV);
+  const rangeA = Math.max(0.18, maxA - minA);
+  const size = Math.min(2, Math.max(rangeV, rangeA) * 1.45);
+  const half = size / 2;
+
+  minV = Math.max(-1, centerV - half);
+  maxV = Math.min(1, centerV + half);
+  minA = Math.max(-1, centerA - half);
+  maxA = Math.min(1, centerA + half);
+
+  if (maxV - minV < size) {
+    const missing = size - (maxV - minV);
+    minV = Math.max(-1, minV - missing / 2);
+    maxV = Math.min(1, maxV + missing / 2);
+  }
+  if (maxA - minA < size) {
+    const missing = size - (maxA - minA);
+    minA = Math.max(-1, minA - missing / 2);
+    maxA = Math.min(1, maxA + missing / 2);
+  }
+
+  vaView = { minV, maxV, minA, maxA, zoomed: size < 1.9 };
+  invalidateVAPlotCache();
+}
 
 function updateVAPlot(valence, arousal, dominant) {
   vaHistory.push({ valence, arousal, dominant });
   if (vaHistory.length > 30) vaHistory.shift();
-  drawVAPlot();
+  invalidateVAPlotCache();
+  scheduleVAPlotDraw();
 }
 
 function vaProject(v, a, W, H) {
+  const vNorm = (v - vaView.minV) / Math.max(0.001, vaView.maxV - vaView.minV);
+  const aNorm = (a - vaView.minA) / Math.max(0.001, vaView.maxA - vaView.minA);
   return [
-    ((v + 1) / 2) * (W - 20) + 10,
-    (1 - (a + 1) / 2) * (H - 20) + 10,
+    clamp01(vNorm) * (W - 20) + 10,
+    (1 - clamp01(aNorm)) * (H - 20) + 10,
   ];
+}
+
+function niceStep(range, targetTicks = 4) {
+  if (!Number.isFinite(range) || range <= 0) return 0.5;
+  const raw = range / targetTicks;
+  const power = Math.pow(10, Math.floor(Math.log10(raw)));
+  const scaled = raw / power;
+  const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return nice * power;
+}
+
+function valueTicks(min, max, targetTicks = 4) {
+  const step = niceStep(max - min, targetTicks);
+  const ticks = [];
+  const start = Math.ceil(min / step) * step;
+  for (let value = start; value <= max + step * 0.5; value += step) {
+    if (value > min + step * 0.2 && value < max - step * 0.2) {
+      ticks.push(Number(value.toFixed(4)));
+    }
+  }
+  return ticks;
+}
+
+function valueInRange(value, min, max) {
+  return value > min && value < max;
 }
 
 function drawVABase(W, H) {
   vaCtx.clearRect(0, 0, W, H);
-  vaCtx.fillStyle = '#141820';
+  vaCtx.fillStyle = '#10141d';
   vaCtx.fillRect(0, 0, W, H);
 
-  vaCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+  vaCtx.strokeStyle = 'rgba(255,255,255,0.04)';
   vaCtx.lineWidth = 0.5;
   vaCtx.beginPath();
-  vaCtx.moveTo(W / 2, 0); vaCtx.lineTo(W / 2, H);
-  vaCtx.moveTo(0, H / 2); vaCtx.lineTo(W, H / 2);
+  for (const tick of valueTicks(vaView.minV, vaView.maxV, 4)) {
+    const [x] = vaProject(tick, vaView.minA, W, H);
+    vaCtx.moveTo(x, 0); vaCtx.lineTo(x, H);
+  }
+  for (const tick of valueTicks(vaView.minA, vaView.maxA, 4)) {
+    const [, y] = vaProject(vaView.minV, tick, W, H);
+    vaCtx.moveTo(0, y); vaCtx.lineTo(W, y);
+  }
+  vaCtx.stroke();
+
+  vaCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+  vaCtx.beginPath();
+  if (valueInRange(0, vaView.minV, vaView.maxV)) {
+    const [x0] = vaProject(0, vaView.minA, W, H);
+    vaCtx.moveTo(x0, 0); vaCtx.lineTo(x0, H);
+  }
+  if (valueInRange(0, vaView.minA, vaView.maxA)) {
+    const [, y0] = vaProject(vaView.minV, 0, W, H);
+    vaCtx.moveTo(0, y0); vaCtx.lineTo(W, y0);
+  }
   vaCtx.stroke();
 
   vaCtx.font = '7px monospace';
   vaCtx.fillStyle = 'rgba(255,255,255,0.12)';
   const pad = 8;
-  vaCtx.fillText('ANGRY', pad, pad + 7);
-  vaCtx.fillText('ENERGETIC', W - 65, pad + 7);
-  vaCtx.fillText('SAD', pad, H - pad);
-  vaCtx.fillText('CALM', W - 34, H - pad);
+  if (vaView.zoomed) {
+    vaCtx.fillText(`V ${vaView.minV.toFixed(2)}..${vaView.maxV.toFixed(2)}`, pad, pad + 7);
+    vaCtx.fillText(`A ${vaView.minA.toFixed(2)}..${vaView.maxA.toFixed(2)}`, pad, H - pad);
+  } else {
+    vaCtx.fillText('ANGRY', pad, pad + 7);
+    vaCtx.fillText('ENERGETIC', W - 65, pad + 7);
+    vaCtx.fillText('SAD', pad, H - pad);
+    vaCtx.fillText('CALM', W - 34, H - pad);
+  }
 }
 
-function drawVAPlot() {
+function drawVAPlotLegacy() {
   const W = vaCanvas.width, H = vaCanvas.height;
   drawVABase(W, H);
 
@@ -1514,15 +1794,18 @@ function drawVAPlot() {
   }
 }
 
-// Playback-mode plot: every chunk is a faint static dot, the highlight
-// snaps from one chunk's coordinates to the next at chunk boundaries.
-function drawVAPlotPlayback(highlightIdx) {
+// Playback-mode plot: MuQ points make a fine path when available, while older
+// saved analyses fall back to the 10s chunk points.
+function drawVAPlotPlaybackLegacy(highlightIdx) {
   const W = vaCanvas.width, H = vaCanvas.height;
   drawVABase(W, H);
+  const plotPoints = activeTimeline();
+  if (!plotPoints.length) return;
+  const stride = Math.max(1, Math.ceil(plotPoints.length / 240));
 
-  // All chunks as faint dots
-  for (let i = 0; i < chunks.length; i++) {
-    const c = chunks[i];
+  // Fine mood path as faint dots
+  for (let i = 0; i < plotPoints.length; i += stride) {
+    const c = plotPoints[i];
     const [px, py] = vaProject(c.valence, c.arousal, W, H);
     const color = MOOD_COLORS[c.dominant] || '#888';
     const isPast = i <= highlightIdx;
@@ -1533,10 +1816,10 @@ function drawVAPlotPlayback(highlightIdx) {
   }
 
   // Connect path with a thin polyline
-  if (chunks.length > 1) {
+  if (plotPoints.length > 1) {
     vaCtx.beginPath();
-    for (let i = 0; i < chunks.length; i++) {
-      const c = chunks[i];
+    for (let i = 0; i < plotPoints.length; i += stride) {
+      const c = plotPoints[i];
       const [px, py] = vaProject(c.valence, c.arousal, W, H);
       i === 0 ? vaCtx.moveTo(px, py) : vaCtx.lineTo(px, py);
     }
@@ -1545,9 +1828,9 @@ function drawVAPlotPlayback(highlightIdx) {
     vaCtx.stroke();
   }
 
-  // Highlight dot — jumps between chunk positions, with a brief "pop" easing
-  if (highlightIdx >= 0 && highlightIdx < chunks.length) {
-    const c = chunks[highlightIdx];
+  // Highlight dot — follows the active fine point, with a brief "pop" easing
+  if (highlightIdx >= 0 && highlightIdx < plotPoints.length) {
+    const c = plotPoints[highlightIdx];
     const [px, py] = vaProject(c.valence, c.arousal, W, H);
     const color = MOOD_COLORS[c.dominant] || '#888';
 
@@ -1574,6 +1857,120 @@ function drawVAPlotPlayback(highlightIdx) {
     vaCtx.fillStyle = color;
     vaCtx.fill();
   }
+}
+
+function vaPlotPoints() {
+  return activeTimeline();
+}
+
+function vaCacheKey(plotPoints, W, H) {
+  const first = plotPoints[0];
+  const last = plotPoints[plotPoints.length - 1];
+  return [
+    W,
+    H,
+    plotPoints.length,
+    vaView.minV.toFixed(4),
+    vaView.maxV.toFixed(4),
+    vaView.minA.toFixed(4),
+    vaView.maxA.toFixed(4),
+    first?.timeStart ?? first?.index ?? 0,
+    last?.timeEnd ?? last?.index ?? 0,
+    first?.valence ?? 0,
+    last?.arousal ?? 0,
+  ].join(':');
+}
+
+function buildVAPlotCache(plotPoints, W, H) {
+  const key = vaCacheKey(plotPoints, W, H);
+  if (vaPlotCache?.key === key) return vaPlotCache;
+
+  const layer = document.createElement('canvas');
+  layer.width = W;
+  layer.height = H;
+  const layerCtx = layer.getContext('2d');
+  const stride = 1;
+  const pts = [];
+
+  for (let i = 0; i < plotPoints.length; i += stride) {
+    const point = plotPoints[i];
+    const [x, y] = vaProject(point.valence, point.arousal, W, H);
+    pts.push({ point, x, y, sourceIndex: i });
+  }
+  if (pts.length && pts[pts.length - 1].sourceIndex !== plotPoints.length - 1) {
+    const point = plotPoints[plotPoints.length - 1];
+    const [x, y] = vaProject(point.valence, point.arousal, W, H);
+    pts.push({ point, x, y, sourceIndex: plotPoints.length - 1 });
+  }
+
+  layerCtx.lineCap = 'round';
+  layerCtx.lineJoin = 'round';
+
+  for (let pass = 0; pass < 2; pass++) {
+    layerCtx.lineWidth = pass === 0 ? 3.5 : 1.15;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const grad = layerCtx.createLinearGradient(a.x, a.y, b.x, b.y);
+      grad.addColorStop(0, vaColor(a.point, pass === 0 ? 0.16 : 0.82));
+      grad.addColorStop(1, vaColor(b.point, pass === 0 ? 0.16 : 0.82));
+      layerCtx.strokeStyle = grad;
+      layerCtx.beginPath();
+      layerCtx.moveTo(a.x, a.y);
+      layerCtx.lineTo(b.x, b.y);
+      layerCtx.stroke();
+    }
+  }
+
+  vaPlotCache = { key, layer, pts };
+  return vaPlotCache;
+}
+
+function drawCurrentVAMarker(point) {
+  const W = vaCanvas.width, H = vaCanvas.height;
+  const [px, py] = vaProject(point.valence, point.arousal, W, H);
+  const pulse = 1 + Math.sin(performance.now() / 260) * 0.08;
+
+  vaCtx.beginPath();
+  vaCtx.arc(px, py, 10 * pulse, 0, Math.PI * 2);
+  vaCtx.strokeStyle = vaColor(point, 0.28);
+  vaCtx.lineWidth = 1;
+  vaCtx.stroke();
+
+  vaCtx.beginPath();
+  vaCtx.arc(px, py, 4.4, 0, Math.PI * 2);
+  vaCtx.fillStyle = vaColor(point, 1);
+  vaCtx.fill();
+  vaCtx.strokeStyle = 'rgba(255,255,255,0.78)';
+  vaCtx.lineWidth = 1;
+  vaCtx.stroke();
+}
+
+function drawVAPath(markerPoint = null) {
+  const W = vaCanvas.width, H = vaCanvas.height;
+  drawVABase(W, H);
+  const plotPoints = vaPlotPoints();
+  if (!plotPoints.length) return;
+  const cache = buildVAPlotCache(plotPoints, W, H);
+  vaCtx.drawImage(cache.layer, 0, 0);
+  drawCurrentVAMarker(markerPoint || plotPoints[plotPoints.length - 1]);
+}
+
+function drawVAPlot() {
+  drawVAPath();
+}
+
+function scheduleVAPlotDraw() {
+  if (vaDrawScheduled) return;
+  vaDrawScheduled = true;
+  requestAnimationFrame(() => {
+    vaDrawScheduled = false;
+    drawVAPlot();
+  });
+}
+
+function drawVAPlotPlayback(markerPoint) {
+  drawVAPath(markerPoint);
 }
 
 // =============================================
@@ -1734,10 +2131,13 @@ function resetApp(showOverlay = true) {
     tdTimerInterval = null;
   }
   lastPlaybackChunkIdx = -1;
+  lastPlaybackFineIdx = -1;
   vaHighlightIdx = -1;
   chunks = [];
+  fineTimeline = [];
   shapes = [];
   vaHistory = [];
+  resetVAView();
   currentChunkIndex = -1;
   analysisFilepath = null;
   lastStems = null;
@@ -1746,6 +2146,7 @@ function resetApp(showOverlay = true) {
   isAnalyzing = false;
   audioReady = false;
   tdPlaying = false;
+  tdEndPauseSent = false;
   tdCurrentTime = 0;
   tdDuration = 0;
   bgHue = targetHue = 230;
@@ -1757,6 +2158,7 @@ function resetApp(showOverlay = true) {
   document.getElementById('moodName').style.color = 'var(--muted)';
   document.getElementById('moodSwatch').style.background = 'var(--muted)';
   document.getElementById('moodConf').textContent = 'Waiting for audio...';
+  displaySongTitle('');
   document.getElementById('valenceNum').textContent = '0.00';
   document.getElementById('arousalNum').textContent = '0.00';
   document.getElementById('fTempo').textContent = '—';
@@ -2046,6 +2448,7 @@ function normalizeStoredChunk(chunk, fallbackIndex) {
     mood,
     dominant,
     features: chunk.features || {},
+    timeline: Array.isArray(chunk.timeline) ? chunk.timeline : [],
   };
 }
 
@@ -2055,6 +2458,7 @@ function loadSelectedSavedAnalysis() {
   resetApp(false);
   currentSavedSelection = selected;
   currentSourceFilename = selected.source_filename || selected.name;
+  displaySongTitle(currentSourceFilename);
   currentDuration = selected.duration || 0;
   analysisFilepath = selected.filepath || null;
   lastStems = selected.stems || null;
@@ -2068,14 +2472,17 @@ function loadSelectedSavedAnalysis() {
   const loaded = selected.chunks.map(normalizeStoredChunk);
   for (const chunk of loaded) {
     chunks.push(chunk);
+    appendFineTimeline({ timeline: chunk.timeline }, chunk);
     currentChunkIndex = chunks.length - 1;
     updateSidebar(chunk);
     addTimelineItem(chunk);
     updateVAPlot(chunk.valence, chunk.arousal, chunk.dominant);
     updateBackground(chunk);
   }
+  updateVAViewFromTimeline(fineTimeline.length ? fineTimeline : chunks);
+  scheduleVAPlotDraw();
 
-  window.sendTimelineToOscBridge?.(chunks, analysisFilepath, lastStems);
+  window.sendTimelineToOscBridge?.(fineTimeline.length ? fineTimeline : chunks, analysisFilepath, lastStems);
   setupAudio({ name: selected.name });
   closeLibraryModal();
   showToast('Loaded saved analysis.');
@@ -2163,29 +2570,42 @@ function loadSelectedSavedAnalysis() {
 
   const MOODS = ['energetic', 'happy', 'calm', 'romantic', 'sad', 'angry'];
 
-  // Send the full analyzed timeline in one batched payload
-  window.sendTimelineToOscBridge = function (chunkList, filepath, stems) {
+  function timelineStepSeconds(timelineList) {
+    if (!timelineList || timelineList.length < 2) {
+      return timelineList?.[0]
+        ? Math.max(0.001, (timelineList[0].timeEnd ?? CHUNK_DUR) - (timelineList[0].timeStart ?? 0))
+        : CHUNK_DUR;
+    }
+    const step = (timelineList[1].timeStart ?? 0) - (timelineList[0].timeStart ?? 0);
+    return Math.max(0.001, Number.isFinite(step) && step > 0 ? step : CHUNK_DUR);
+  }
+
+  // Send the full analyzed timeline in one batched payload. With MuQ-BiGRU this
+  // is the 0.5s fine timeline, while the UI can still display 10s summaries.
+  window.sendTimelineToOscBridge = function (timelineList, filepath, stems) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn('[MoodWave] OSC bridge not connected — skipping timeline send');
       return;
     }
-    if (!chunkList || chunkList.length === 0) return;
+    if (!timelineList || timelineList.length === 0) return;
 
-    const duration = chunkList[chunkList.length - 1].timeEnd;
+    const duration = currentDuration || timelineList[timelineList.length - 1].timeEnd;
+    const stepSeconds = timelineStepSeconds(timelineList);
+    const source = timelineList === fineTimeline ? 'fineTimeline' : 'chunks';
     const moodArrays = Object.fromEntries(MOODS.map(m => [m, []]));
 
     const payload = {
       type: 'timeline',
       filepath: filepath || '',
       duration,
-      chunk_duration: 10,
-      num_chunks: chunkList.length,
-      valence:      chunkList.map(c => c.valence),
-      arousal:      chunkList.map(c => c.arousal),
-      tempo:        chunkList.map(c => c.features?.tempo      ?? 0),
-      energy:       chunkList.map(c => c.features?.energy     ?? 0),
-      brightness:   chunkList.map(c => c.features?.brightness ?? 0),
-      dominant_idx: chunkList.map(c => Math.max(0, MOODS.indexOf(c.dominant))),
+      chunk_duration: stepSeconds,
+      num_chunks: timelineList.length,
+      valence:      timelineList.map(c => c.valence),
+      arousal:      timelineList.map(c => c.arousal),
+      tempo:        timelineList.map(c => c.features?.tempo      ?? 0),
+      energy:       timelineList.map(c => c.features?.energy     ?? 0),
+      brightness:   timelineList.map(c => c.features?.brightness ?? 0),
+      dominant_idx: timelineList.map(c => Math.max(0, MOODS.indexOf(c.dominant))),
       mood: moodArrays,
     };
 
@@ -2193,14 +2613,17 @@ function loadSelectedSavedAnalysis() {
       payload.stems = stems;
     }
 
-    for (const c of chunkList) {
+    for (const c of timelineList) {
       for (const m of MOODS) moodArrays[m].push(c.mood?.[m] ?? 0);
     }
 
     try {
       ws.send(JSON.stringify(payload));
       flashSending();
-      console.log('[MoodWave] Timeline sent to bridge:', chunkList.length, 'chunks');
+      console.log('[MoodWave] Timeline sent to bridge:', source, timelineList.length, 'points @', stepSeconds, 's');
+      if (stepSeconds >= 9) {
+        console.warn('[MoodWave] Sent coarse 10s timeline because no MuQ fine timeline was available.');
+      }
     } catch (e) {
       console.warn('[MoodWave] Timeline send failed:', e);
     }
@@ -2232,6 +2655,8 @@ let tdTimerInterval = null;
 let playbackMode = false;
 let playbackRaf = null;
 let lastPlaybackChunkIdx = -1;
+let lastPlaybackFineIdx = -1;
+let tdEndPauseSent = false;
 
 const CHUNK_DUR = 10;
 
@@ -2241,25 +2666,75 @@ function easeInOutCubic(t) {
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
+function activeTimeline() {
+  return fineTimeline.length ? fineTimeline : chunks;
+}
+
+function timelineIndexAtTime(timelineList, timeSeconds) {
+  if (!timelineList.length) return -1;
+  for (let i = 0; i < timelineList.length; i++) {
+    const item = timelineList[i];
+    if (timeSeconds >= item.timeStart && timeSeconds < item.timeEnd) return i;
+  }
+  return timeSeconds < timelineList[0].timeStart ? 0 : timelineList.length - 1;
+}
+
+function timelinePointAtTime(timelineList, timeSeconds) {
+  if (!timelineList.length) return null;
+  const idx = timelineIndexAtTime(timelineList, timeSeconds);
+  const i0 = Math.max(0, idx);
+  const i1 = Math.min(timelineList.length - 1, i0 + 1);
+  const a = timelineList[i0];
+  const b = timelineList[i1];
+  const span = Math.max(0.001, (b.timeStart ?? b.timeEnd) - (a.timeStart ?? a.timeEnd));
+  const frac = Math.max(0, Math.min(1, (timeSeconds - a.timeStart) / span));
+  const mood = {};
+  Object.keys(MOOD_COLORS).forEach(m => {
+    mood[m] = lerp(a.mood?.[m] ?? 0, b.mood?.[m] ?? 0, frac);
+  });
+  const dominant = dominantFromMood(mood) || a.dominant || b.dominant || 'calm';
+  return {
+    index: i0,
+    timeStart: timeSeconds,
+    timeEnd: timeSeconds,
+    valence: lerp(a.valence ?? 0, b.valence ?? 0, frac),
+    arousal: lerp(a.arousal ?? 0, b.arousal ?? 0, frac),
+    mood,
+    dominant,
+    features: {
+      tempo: lerp(a.features?.tempo ?? 0, b.features?.tempo ?? 0, frac),
+      energy: lerp(a.features?.energy ?? 0, b.features?.energy ?? 0, frac),
+      brightness: lerp(a.features?.brightness ?? 0, b.features?.brightness ?? 0, frac),
+    },
+  };
+}
+
+function chunkIndexAtTime(timeSeconds) {
+  if (!chunks.length) return -1;
+  for (let i = 0; i < chunks.length; i++) {
+    if (timeSeconds >= chunks[i].timeStart && timeSeconds < chunks[i].timeEnd) return i;
+  }
+  return timeSeconds < chunks[0].timeStart ? 0 : chunks.length - 1;
+}
+
 // Drives the sidebar + V-A plot from the audio playhead.
-// Mood bars + audio features lerp smoothly between adjacent chunks.
-// Dominant mood + V-A highlight snap at chunk boundaries.
+// Mood bars + V/A now follow the MuQ 0.5s timeline when available.
+// The visible sidebar timeline remains the coarser 10s summary list.
 function playbackTick() {
   if (!playbackMode) return;
   playbackRaf = requestAnimationFrame(playbackTick);
   if (chunks.length === 0) return;
 
-  const last = chunks.length - 1;
-  const t = Math.max(0, Math.min((tdDuration || (last + 1) * CHUNK_DUR), tdCurrentTime));
-
-  // Each chunk's "anchor" is its midpoint: chunk i ↔ time (i + 0.5) * CHUNK_DUR.
-  // Interpolate between two anchors so values drift continuously through time.
-  const floatIdx = Math.max(0, Math.min(last, t / CHUNK_DUR - 0.5));
-  const i0 = Math.floor(floatIdx);
-  const i1 = Math.min(last, i0 + 1);
-  const frac = easeInOutCubic(floatIdx - i0);
-  const a = chunks[i0];
-  const b = chunks[i1];
+  const detailTimeline = activeTimeline();
+  const detailLast = detailTimeline.length - 1;
+  const t = Math.max(0, Math.min((tdDuration || detailTimeline[detailLast].timeEnd), tdCurrentTime));
+  const detailIdx = timelineIndexAtTime(detailTimeline, t);
+  const i0 = Math.max(0, detailIdx);
+  const i1 = Math.min(detailLast, i0 + 1);
+  const a = detailTimeline[i0];
+  const b = detailTimeline[i1];
+  const span = Math.max(0.001, (b.timeStart ?? b.timeEnd) - (a.timeStart ?? a.timeEnd));
+  const frac = easeInOutCubic(Math.max(0, Math.min(1, (t - a.timeStart) / span)));
 
   // Interpolated mood distribution
   Object.keys(MOOD_COLORS).forEach(m => {
@@ -2286,30 +2761,33 @@ function playbackTick() {
   document.getElementById('valenceNum').textContent = vNum.toFixed(2);
   document.getElementById('arousalNum').textContent = aNum.toFixed(2);
 
-  // Snap-on-boundary: dominant mood + V-A highlight follow the active chunk.
-  const currentIdx = Math.max(0, Math.min(last, Math.floor(t / CHUNK_DUR)));
-  const cur = chunks[currentIdx];
+  // Fine mood label follows the active MuQ point; the V-A marker glides
+  // between points using the exact playhead time.
+  const cur = detailTimeline[i0];
+  const vaMarker = timelinePointAtTime(detailTimeline, t) || cur;
 
-  if (currentIdx !== lastPlaybackChunkIdx) {
-    lastPlaybackChunkIdx = currentIdx;
-    vaHighlightIdx = currentIdx;
-    vaHighlightT = performance.now();
+  if (i0 !== lastPlaybackFineIdx) {
+    lastPlaybackFineIdx = i0;
+    vaHighlightIdx = i0;
 
-    // Dominant mood label snaps
     const color = MOOD_COLORS[cur.dominant] || '#888';
     document.getElementById('moodSwatch').style.background = color;
     document.getElementById('moodName').textContent = cur.dominant.toUpperCase();
     document.getElementById('moodName').style.color = color;
     const conf = Math.round((cur.mood[cur.dominant] || 0) * 100);
-    document.getElementById('moodConf').textContent = `${conf}% confidence · chunk ${currentIdx}`;
+    const label = fineTimeline.length ? `${cur.timeStart.toFixed(1)}s` : `chunk ${cur.index}`;
+    document.getElementById('moodConf').textContent = `${conf}% confidence · ${label}`;
 
-    // Background field follows current chunk
     updateBackground(cur);
+  }
 
-    // Sync timeline highlight + scroll
+  // Sync the visible 10s timeline highlight + scroll.
+  const currentChunkIdx = chunkIndexAtTime(t);
+  if (currentChunkIdx !== lastPlaybackChunkIdx) {
+    lastPlaybackChunkIdx = currentChunkIdx;
     const timeline = document.getElementById('timeline');
     timeline.querySelectorAll('.chunk-item').forEach(el => {
-      el.classList.toggle('active', Number(el.dataset.index) === currentIdx);
+      el.classList.toggle('active', Number(el.dataset.index) === currentChunkIdx);
     });
     const activeItem = timeline.querySelector('.chunk-item.active');
     if (activeItem) {
@@ -2317,9 +2795,8 @@ function playbackTick() {
     }
   }
 
-  // V-A plot redraws every frame so the pulse animates, but the chunk
-  // index is integer-valued, so the highlight snaps from dot to dot.
-  drawVAPlotPlayback(vaHighlightIdx);
+  // V-A plot redraws every frame so the marker glides along the cached path.
+  drawVAPlotPlayback(vaMarker);
 }
 
 function startPlaybackMode() {
@@ -2327,6 +2804,7 @@ function startPlaybackMode() {
   playbackMode = true;
   document.body.classList.add('playback');
   lastPlaybackChunkIdx = -1;
+  lastPlaybackFineIdx = -1;
   vaHighlightIdx = 0;
   vaHighlightT = performance.now();
   if (playbackRaf) cancelAnimationFrame(playbackRaf);
@@ -2344,12 +2822,17 @@ function setupAudio(file) {
   audioReady = true;
   tdDuration = 0;
 
-  // Derive duration from chunks
-  if (chunks.length > 0) {
+  // Derive duration from the finest available timeline.
+  if (currentDuration) {
+    tdDuration = currentDuration;
+  } else if (fineTimeline.length > 0) {
+    tdDuration = fineTimeline[fineTimeline.length - 1].timeEnd;
+  } else if (chunks.length > 0) {
     tdDuration = chunks[chunks.length - 1].timeEnd;
   }
 
-  document.getElementById('audioFilename').textContent = file.name;
+  const filename = file.name || currentSourceFilename || 'Current song';
+  displaySongTitle(filename);
   document.getElementById('audioBar').style.display = 'flex';
 
   document.getElementById('progressWrap').onclick = (e) => {
@@ -2370,6 +2853,10 @@ function setupAudio(file) {
       if (tdDuration && tdCurrentTime >= tdDuration) {
         tdCurrentTime = tdDuration;
         tdPlaying = false;
+        if (!tdEndPauseSent) {
+          tdEndPauseSent = true;
+          window.sendTransportOSC?.('pause', tdDuration);
+        }
         document.getElementById('playBtn').textContent = '▶';
       }
     }
@@ -2384,6 +2871,10 @@ function setupAudio(file) {
 }
 
 function tdPlay() {
+  if (tdDuration && tdCurrentTime >= tdDuration - 0.05) {
+    tdCurrentTime = 0;
+  }
+  tdEndPauseSent = false;
   tdPlaying = true;
   tdTimeAtStart = tdCurrentTime;
   tdTimerStart = performance.now();
@@ -2393,6 +2884,7 @@ function tdPlay() {
 
 function tdPause() {
   tdPlaying = false;
+  tdEndPauseSent = false;
   window.sendTransportOSC?.('pause', tdCurrentTime);
   document.getElementById('playBtn').textContent = '▶';
 }

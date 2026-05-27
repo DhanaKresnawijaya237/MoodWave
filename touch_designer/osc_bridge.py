@@ -7,6 +7,7 @@ New flow (pre-loaded, not streaming):
   1. Frontend sends ONE 'timeline' payload after analysis completes.
      The payload contains: filepath, duration, chunk_duration, and arrays of
      valence/arousal/tempo/energy/brightness and per-mood distribution arrays.
+     With MuQ-BiGRU, chunk_duration is usually 0.5s.
   2. Frontend sends transport messages (play, pause, seek) when the user
      interacts with the player UI.
 
@@ -42,12 +43,12 @@ def send_timeline(payload):
     """
     Forward a full timeline payload to TD as OSC messages.
 
-    Expected payload shape (all arrays same length = num chunks):
+    Expected payload shape (all arrays same length = num timeline points):
       {
         "filepath": "C:/.../uploads/current.wav",
         "duration": 183.2,
-        "chunk_duration": 10,
-        "num_chunks": 18,
+        "chunk_duration": 0.5,
+        "num_chunks": 366,
         "valence":    [float, ...],
         "arousal":    [float, ...],
         "tempo":      [float, ...],
@@ -104,7 +105,7 @@ def send_timeline(payload):
         _send_array(f"/moodwave/timeline/mood/{name}", mood.get(name))
 
     print(f"[OSC] TIMELINE  file={filepath}")
-    print(f"              duration={duration:.2f}s  chunks={num_chunks}")
+    print(f"              duration={duration:.2f}s  points={num_chunks}  step={chunk_duration:.3f}s")
 
 
 def send_transport(msg_type, value):

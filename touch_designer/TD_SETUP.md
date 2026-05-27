@@ -21,15 +21,15 @@ New flow:
 |--------------------------------------|---------------------|----------------------------------------|
 | `/moodwave/filepath`                 | string              | Absolute path to `current.wav`         |
 | `/moodwave/duration`                 | float               | Song duration in seconds               |
-| `/moodwave/chunk_duration`           | float               | Seconds per chunk (10)                 |
-| `/moodwave/num_chunks`               | int                 | Number of chunks in the timeline       |
-| `/moodwave/timeline/valence`         | float[]             | Valence per chunk                      |
-| `/moodwave/timeline/arousal`         | float[]             | Arousal per chunk                      |
-| `/moodwave/timeline/tempo`           | float[]             | Tempo per chunk                        |
-| `/moodwave/timeline/energy`          | float[]             | Energy per chunk                       |
-| `/moodwave/timeline/brightness`      | float[]             | Brightness per chunk                   |
-| `/moodwave/timeline/dominant`        | int[]               | Dominant mood index (0..5) per chunk   |
-| `/moodwave/timeline/mood/{name}`     | float[]             | Probability per chunk for one mood     |
+| `/moodwave/chunk_duration`           | float               | Seconds per timeline point (0.5 with MuQ-BiGRU) |
+| `/moodwave/num_chunks`               | int                 | Number of points in the timeline       |
+| `/moodwave/timeline/valence`         | float[]             | Valence per timeline point             |
+| `/moodwave/timeline/arousal`         | float[]             | Arousal per timeline point             |
+| `/moodwave/timeline/tempo`           | float[]             | Tempo per timeline point               |
+| `/moodwave/timeline/energy`          | float[]             | Energy per timeline point              |
+| `/moodwave/timeline/brightness`      | float[]             | Brightness per timeline point          |
+| `/moodwave/timeline/dominant`        | int[]               | Dominant mood index (0..5) per point   |
+| `/moodwave/timeline/mood/{name}`     | float[]             | Probability per point for one mood     |
 | `/moodwave/stems/vocals`             | string              | Absolute path to vocals stem           |
 | `/moodwave/stems/drums`              | string              | Absolute path to drums stem            |
 | `/moodwave/stems/bass`               | string              | Absolute path to bass stem             |
@@ -70,6 +70,8 @@ def _audio_ops():
 
 def _load_audio(audio, filepath):
     audio.par.file.val = filepath
+    if hasattr(audio.par, 'loop'):
+        audio.par.loop = 0
     audio.par.cuepoint.val = 0
     audio.par.cuepulse.pulse()
 
@@ -116,6 +118,7 @@ def onReceiveOSC(dat, rowIndex, message, bytes, timeStamp, address, args, peer):
 ### 3. Audio File In CHOP — `audiofilein1`
 - **File:** (leave blank — it gets set by OSC)
 - **Play:** off by default (transport OSC flips it on)
+- **Loop:** off
 - **Cue:** used by the seek handler
 
 > **Stem support:** If Demucs separation succeeds, six additional
@@ -131,6 +134,8 @@ def onReceiveOSC(dat, rowIndex, message, bytes, timeStamp, address, args, peer):
 >
 > The callback above auto-loads any `/moodwave/stems/{name}` path into
 > `audiofilein_{name}` and keeps all stem players synced with the main audio.
+> Set **Loop** off on each stem Audio File In CHOP too. The callback also tries
+> to turn `par.loop` off when a file is loaded.
 > If you prefer explicit branches, the equivalent callback checks are:
 >
 > ```python
@@ -207,7 +212,9 @@ def onCook(scriptOp):
     # Current audio time in seconds
     t = float(audio['t'][0]) if audio is not None else 0.0
 
-    chunk_dur = 10.0
+    # MuQ-BiGRU sends a fine 0.5s timeline. If you intentionally send
+    # coarser timelines later, change this to match /moodwave/chunk_duration.
+    chunk_dur = 0.5
     chunk_idx = int(t // chunk_dur)
 
     val_ch = timeline['moodwave/timeline/valence']
@@ -243,7 +250,7 @@ def onCook(scriptOp):
 ```
 
 This CHOP now outputs `valence`, `arousal`, `r`, `g`, `b` for the **currently
-playing chunk**. Reference any of these from the rest of your visuals.
+playing 0.5s timeline point**. Reference any of these from the rest of your visuals.
 
 ### 5. MJPEG server (unchanged)
 Keep using `td_mjpeg_server.py`. Make sure:
