@@ -5,12 +5,12 @@ import torch
 
 
 MOOD_CENTERS = {
-    "energetic": (0.7, 0.7),
-    "happy": (0.5, 0.3),
-    "calm": (0.4, -0.6),
-    "romantic": (0.5, -0.5),
-    "sad": (-0.6, -0.5),
-    "angry": (-0.6, 0.7),
+    "energetic":    (0.7, 0.7),
+    "happy":        (0.5, 0.3),
+    "calm":         (0.3, -0.6),
+    "romantic":     (0.5, -0.3),
+    "sad":          (-0.5, -0.5),
+    "angry":        (-0.7, 0.7),
 }
 
 

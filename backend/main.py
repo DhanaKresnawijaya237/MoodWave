@@ -29,12 +29,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _env_float(name, default):
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        print(f"[MoodWave] Invalid {name}; using {default}")
+        return float(default)
+
+
 CHUNK_DURATION = 10  # seconds
 MOODS = ["energetic", "happy", "calm", "romantic", "sad", "angry"]
 STEM_NAMES = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 MUQ_WINDOW_SECONDS = 0.5
 MUQ_EMBED_CHUNK_SECONDS = 10.0
 MUQ_MODEL_NAME = "OpenMuQ/MuQ-large-msd-iter"
+MUQ_VALENCE_GAIN = _env_float("MOODWAVE_VALENCE_GAIN", 1)
+MUQ_AROUSAL_GAIN = _env_float("MOODWAVE_AROUSAL_GAIN", 1)
+MUQ_VALENCE_BIAS = _env_float("MOODWAVE_VALENCE_BIAS", 0.0)
+MUQ_AROUSAL_BIAS = _env_float("MOODWAVE_AROUSAL_BIAS", 0.0)
 
 BASE_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
@@ -58,6 +71,13 @@ def _stats_to_numpy(stats):
         key: value.detach().cpu().numpy() if torch.is_tensor(value) else value
         for key, value in stats.items()
     }
+
+
+def _calibrate_valence_arousal(valence, arousal):
+    """Expand compressed model outputs for visualization and mood mapping."""
+    calibrated_valence = np.clip((valence * MUQ_VALENCE_GAIN) + MUQ_VALENCE_BIAS, -1.0, 1.0)
+    calibrated_arousal = np.clip((arousal * MUQ_AROUSAL_GAIN) + MUQ_AROUSAL_BIAS, -1.0, 1.0)
+    return float(calibrated_valence), float(calibrated_arousal)
 
 
 def _load_muq_bigru():
@@ -117,6 +137,11 @@ def _predict_muq_bigru_timeline(audio_path):
         f"[MuQ-BiGRU] Extracting MuQ embeddings in {MUQ_EMBED_CHUNK_SECONDS:g}s chunks "
         f"({MUQ_WINDOW_SECONDS:g}s timeline step)"
     )
+    print(
+        "[MuQ-BiGRU] V/A calibration "
+        f"valence=x{MUQ_VALENCE_GAIN:g}+{MUQ_VALENCE_BIAS:g}, "
+        f"arousal=x{MUQ_AROUSAL_GAIN:g}+{MUQ_AROUSAL_BIAS:g}"
+    )
 
     for chunk_start_sample in range(0, len(y), chunk_samples):
         chunk_end_sample = min(chunk_start_sample + chunk_samples, len(y))
@@ -163,11 +188,14 @@ def _predict_muq_bigru_timeline(audio_path):
 
     timeline = []
     for start_s, window_v, window_a in zip(start_times, pred_v_np, pred_a_np):
-        v = float(window_v)
-        a = float(window_a)
+        raw_v = float(window_v)
+        raw_a = float(window_a)
+        v, a = _calibrate_valence_arousal(raw_v, raw_a)
         timeline.append({
             "start": round(start_s, 2),
             "end": round(min(start_s + MUQ_WINDOW_SECONDS, duration_s), 2),
+            "raw_valence": round(raw_v, 3),
+            "raw_arousal": round(raw_a, 3),
             "valence": round(v, 3),
             "arousal": round(a, 3),
             "distribution": valence_arousal_to_mood_distribution(v, a),
@@ -185,7 +213,11 @@ def _aggregate_muq_chunk(timeline, start_s, end_s):
 
     valence = float(np.mean([point["valence"] for point in windows]))
     arousal = float(np.mean([point["arousal"] for point in windows]))
+    raw_valence = float(np.mean([point.get("raw_valence", point["valence"]) for point in windows]))
+    raw_arousal = float(np.mean([point.get("raw_arousal", point["arousal"]) for point in windows]))
     return {
+        "raw_valence": round(raw_valence, 3),
+        "raw_arousal": round(raw_arousal, 3),
         "valence": round(valence, 3),
         "arousal": round(arousal, 3),
         "distribution": valence_arousal_to_mood_distribution(valence, arousal),
@@ -426,6 +458,8 @@ async def analyze_stream(
                 "chunk": i,
                 "time_start": round(chunk_start_s, 2),
                 "time_end": round(chunk_end_s, 2),
+                "raw_valence": prediction["raw_valence"],
+                "raw_arousal": prediction["raw_arousal"],
                 "valence": prediction["valence"],
                 "arousal": prediction["arousal"],
                 "mood": prediction["distribution"],
@@ -499,6 +533,7 @@ async def save_analysis(request: Request):
         "audio_file": audio_dst_name,
         "stems": saved_stems,
         "summary": _summarize_chunks(chunks),
+        "va_path": payload.get("va_path") or {},
         "chunks": chunks,
     }
 

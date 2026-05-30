@@ -117,6 +117,12 @@
     flex: 1;
     overflow: hidden;
   }
+  .content.sidebar-collapsed {
+    grid-template-columns: 1fr 0;
+  }
+  .content.sidebar-collapsed .sidebar {
+    display: none;
+  }
 
   /* --- Canvas area --- */
   .canvas-area {
@@ -362,6 +368,16 @@
     overflow: hidden;
     grid-row: 1 / 3;
     grid-column: 2;
+  }
+  .sidebar-reopen {
+    position: fixed;
+    right: 16px;
+    bottom: 62px;
+    z-index: 20;
+    display: none;
+  }
+  .content.sidebar-collapsed .sidebar-reopen {
+    display: block;
   }
 
   .sidebar-section {
@@ -634,6 +650,7 @@
     box-shadow: 0 20px 70px rgba(0,0,0,0.45);
   }
   .modal.small { width: min(460px, 94vw); }
+  .modal.library { width: min(980px, 94vw); }
   .modal-header {
     display: flex;
     align-items: center;
@@ -746,6 +763,56 @@
     letter-spacing: 0.04em;
     margin-bottom: 8px;
   }
+  .detail-hero {
+    display: grid;
+    grid-template-columns: minmax(340px, 0.9fr) minmax(260px, 1fr);
+    gap: 28px;
+    align-items: start;
+    margin-bottom: 20px;
+  }
+  .detail-main {
+    min-width: 0;
+  }
+  .detail-preview {
+    min-height: 320px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .library-va-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #10141d;
+    min-height: 150px;
+    height: 150px;
+    position: relative;
+    overflow: hidden;
+  }
+  .library-detail > .library-va-card {
+    float: right;
+    width: 240px;
+    margin-left: 16px;
+  }
+  .detail-preview .library-va-card {
+    width: 240px;
+    flex: 0 0 240px;
+  }
+  .library-va-card canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .library-va-label {
+    position: absolute;
+    left: 10px;
+    top: 8px;
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.22);
+    text-transform: uppercase;
+    pointer-events: none;
+  }
   .detail-meta {
     font-family: var(--mono);
     font-size: 10px;
@@ -755,7 +822,7 @@
   }
   .detail-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     margin-bottom: 16px;
   }
@@ -798,6 +865,12 @@
   @media (max-width: 780px) {
     .library-layout { grid-template-columns: 1fr; }
     .saved-list { border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 12px; max-height: 220px; }
+    .detail-hero { grid-template-columns: 1fr; }
+    .detail-preview { min-height: 180px; justify-content: flex-start; }
+    .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .library-va-card { min-height: 180px; height: 180px; }
+    .detail-preview .library-va-card { width: 100%; flex-basis: 100%; }
+    .library-detail > .library-va-card { float: none; width: 100%; margin-left: 0; }
   }
 
   /* Animated background particles on canvas */
@@ -819,7 +892,9 @@
       <span class="header-song-title" id="headerSongTitle"></span>
     </div>
     <div class="header-actions">
+      <button class="btn compact" id="btnSave" onclick="openSaveModal()" style="display:none">Save</button>
       <button class="btn compact" onclick="openLibraryModal()">Library</button>
+      <div id="oscStatusHost"></div>
       <div id="statusPill" class="status-pill">idle</div>
     </div>
   </header>
@@ -833,7 +908,7 @@
     <div class="separating-progress-text" id="separatingProgressText">0%</div>
   </div>
 
-  <div class="content">
+  <div class="content" id="content">
 
     <!-- TD Video Feed Panel (full left column) -->
     <div class="td-panel" id="tdPanel">
@@ -922,11 +997,13 @@
       <!-- Controls -->
       <div class="controls">
         <button class="btn primary" id="btnLoad" onclick="document.getElementById('fileInput').click()">Load File</button>
-        <button class="btn" id="btnSave" onclick="openSaveModal()" style="display:none">Save</button>
+        <button class="btn" id="btnSidebarToggle" onclick="toggleSidebar()">Hide Panel</button>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <button class="btn" id="btnReset" onclick="resetApp()" style="display:none">Reset</button>
       </div>
     </aside>
+
+    <button class="btn compact sidebar-reopen" id="btnSidebarReopen" onclick="toggleSidebar()">Open Panel</button>
 
     <!-- Hidden elements kept for JS compatibility -->
     <div style="display:none">
@@ -962,7 +1039,7 @@
 </div>
 
 <div class="modal-backdrop hidden" id="libraryModal">
-  <div class="modal">
+  <div class="modal library">
     <div class="modal-header">
       <div class="modal-title">Saved Songs</div>
       <button class="modal-close" onclick="closeLibraryModal()">x</button>
@@ -989,7 +1066,7 @@ const API_BASE = window.location.protocol.startsWith('http')
   ? window.location.origin
   : 'http://127.0.0.1:8000';
 
-const FRONTEND_BUILD = 'muq-fine-timeline-header-title-20260527-13';
+const FRONTEND_BUILD = 'muq-library-layout-20260530-17';
 console.log('[MoodWave] Frontend build:', FRONTEND_BUILD);
 
 const MOOD_COLORS = {
@@ -1001,15 +1078,19 @@ const MOOD_COLORS = {
   angry:     '#ff4d4d',
 };
 
-const MOOD_CENTERS_CANVAS = {
-  // VA -> normalized 0-1 for 2D plot
-  energetic: [0.85, 0.15],
-  happy:     [0.75, 0.35],
-  calm:      [0.70, 0.70],
-  romantic:  [0.75, 0.75],
-  sad:       [0.20, 0.75],
-  angry:     [0.20, 0.15],
+const MOOD_CENTERS_VA = {
+  // Keep this in sync with backend/core/utils.py.
+  energetic: [0.7, 0.7],
+  happy:     [0.5, 0.3],
+  calm:      [0.3, -0.6],
+  romantic:  [0.5, -0.3],
+  sad:       [-0.5, -0.5],
+  angry:     [-0.7, 0.7],
 };
+
+const MOOD_CENTERS_CANVAS = Object.fromEntries(
+  Object.entries(MOOD_CENTERS_VA).map(([mood, [v, a]]) => [mood, [(v + 1) / 2, (1 - a) / 2]])
+);
 
 // =============================================
 // State
@@ -1041,6 +1122,7 @@ let vaHighlightT = 0;
 let vaPlotCache = null;
 let vaDrawScheduled = false;
 let vaView = { minV: -1, maxV: 1, minA: -1, maxA: 1, zoomed: false };
+let sidebarCollapsed = false;
 const FINE_TIMELINE_DUR = 0.5;
 
 // =============================================
@@ -1584,13 +1666,6 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-const VA_CORNER_COLORS = {
-  angry: [255, 90, 80],
-  energetic: [245, 176, 58],
-  sad: [105, 135, 235],
-  calm: [78, 205, 196],
-};
-
 function vaMix(a, b, t) {
   return a + (b - a) * t;
 }
@@ -1603,23 +1678,49 @@ function mixRgb(a, b, t) {
   ];
 }
 
+function hexToRgb(hex) {
+  const clean = String(hex || '').replace('#', '');
+  const value = parseInt(clean.length === 3
+    ? clean.split('').map(ch => ch + ch).join('')
+    : clean, 16);
+  return [
+    (value >> 16) & 255,
+    (value >> 8) & 255,
+    value & 255,
+  ];
+}
+
+function moodWeightsForVA(valence, arousal, temperature = 3) {
+  const scores = {};
+  let total = 0;
+  for (const mood of Object.keys(MOOD_COLORS)) {
+    const [mv, ma] = MOOD_CENTERS_VA[mood] || [0, 0];
+    const dist = Math.hypot(valence - mv, arousal - ma);
+    const score = 1 / Math.pow(dist + 1e-6, temperature);
+    scores[mood] = score;
+    total += score;
+  }
+  if (total <= 0) return Object.fromEntries(Object.keys(MOOD_COLORS).map(mood => [mood, 0]));
+  return Object.fromEntries(Object.entries(scores).map(([mood, score]) => [mood, score / total]));
+}
+
 function vaColor(point, alpha = 1) {
-  // Color is absolute in V/A space, independent of the current zoom. A line
-  // that stays in the bottom-left quadrant should stay in the sad/cool family.
+  // Color is absolute in V/A space, independent of the current zoom. Use the
+  // same mood centers as the backend so the path color matches the distribution.
   const valence = point?.valence ?? 0;
   const arousal = point?.arousal ?? 0;
-  const contrast = value => {
-    const signed = Math.max(-1, Math.min(1, value));
-    return Math.sign(signed) * Math.pow(Math.abs(signed), 0.62);
-  };
-  const x = clamp01((contrast(valence) + 1) / 2);
-  const y = clamp01((contrast(arousal) + 1) / 2);
-  const low = mixRgb(VA_CORNER_COLORS.sad, VA_CORNER_COLORS.calm, x);
-  const high = mixRgb(VA_CORNER_COLORS.angry, VA_CORNER_COLORS.energetic, x);
-  const target = mixRgb(low, high, y);
+  const weights = moodWeightsForVA(valence, arousal);
+  const target = [0, 0, 0];
+  for (const [mood, weight] of Object.entries(weights)) {
+    const rgb = hexToRgb(MOOD_COLORS[mood]);
+    target[0] += rgb[0] * weight;
+    target[1] += rgb[1] * weight;
+    target[2] += rgb[2] * weight;
+  }
   const neutral = [150, 156, 174];
-  const distance = clamp01(Math.hypot(valence, arousal) / 0.75);
-  const colorAmount = clamp01(0.22 + Math.pow(distance, 0.62) * 0.78);
+  const topWeight = Math.max(...Object.values(weights));
+  const confidence = clamp01((topWeight - (1 / Object.keys(MOOD_COLORS).length)) / (1 - (1 / Object.keys(MOOD_COLORS).length)));
+  const colorAmount = clamp01(0.32 + Math.pow(confidence, 0.65) * 0.68);
   const rgb = mixRgb(neutral, target, colorAmount).map(v => Math.round(v));
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
 }
@@ -2210,6 +2311,59 @@ function dominantMoodFromAverage(avg) {
   return Object.entries(avg).sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
 }
 
+function computeVAViewForPoints(points) {
+  const vals = points.map(p => Number(p.valence)).filter(Number.isFinite);
+  const aros = points.map(p => Number(p.arousal)).filter(Number.isFinite);
+  if (!vals.length || !aros.length) return { minV: -1, maxV: 1, minA: -1, maxA: 1 };
+
+  let minV = Math.min(...vals);
+  let maxV = Math.max(...vals);
+  let minA = Math.min(...aros);
+  let maxA = Math.max(...aros);
+  const centerV = (minV + maxV) / 2;
+  const centerA = (minA + maxA) / 2;
+  const rangeV = Math.max(0.18, maxV - minV);
+  const rangeA = Math.max(0.18, maxA - minA);
+  const size = Math.min(2, Math.max(rangeV, rangeA) * 1.45);
+  const half = size / 2;
+
+  minV = Math.max(-1, centerV - half);
+  maxV = Math.min(1, centerV + half);
+  minA = Math.max(-1, centerA - half);
+  maxA = Math.min(1, centerA + half);
+  return { minV, maxV, minA, maxA };
+}
+
+function createVAPathSnapshot() {
+  const source = fineTimeline.length ? fineTimeline : chunks;
+  if (!source.length) return { points: [], view: { minV: -1, maxV: 1, minA: -1, maxA: 1 } };
+  const maxPoints = 360;
+  const stride = Math.max(1, Math.ceil(source.length / maxPoints));
+  const points = [];
+  for (let i = 0; i < source.length; i += stride) {
+    const p = source[i];
+    points.push({
+      valence: Number(p.valence ?? 0),
+      arousal: Number(p.arousal ?? 0),
+      dominant: p.dominant || 'calm',
+      timeStart: Number(p.timeStart ?? 0),
+      timeEnd: Number(p.timeEnd ?? p.timeStart ?? 0),
+    });
+  }
+  const last = source[source.length - 1];
+  const tail = points[points.length - 1];
+  if (last && tail?.timeEnd !== last.timeEnd) {
+    points.push({
+      valence: Number(last.valence ?? 0),
+      arousal: Number(last.arousal ?? 0),
+      dominant: last.dominant || 'calm',
+      timeStart: Number(last.timeStart ?? 0),
+      timeEnd: Number(last.timeEnd ?? last.timeStart ?? 0),
+    });
+  }
+  return { points, view: computeVAViewForPoints(points) };
+}
+
 function openSaveModal() {
   if (!chunks.length) {
     showToast('Analyze a song before saving.');
@@ -2264,6 +2418,7 @@ async function saveCurrentAnalysis() {
         chunk_duration: CHUNK_DUR,
         chunks,
         stems: lastStems || {},
+        va_path: createVAPathSnapshot(),
       }),
     });
     if (!response.ok) {
@@ -2391,12 +2546,116 @@ function renderModalMoodBars(avgMood) {
   }).join('');
 }
 
+function collectSavedVAPath(item) {
+  const saved = item.va_path;
+  if (saved?.points?.length) {
+    return {
+      points: saved.points,
+      view: saved.view || computeVAViewForPoints(saved.points),
+    };
+  }
+
+  const points = [];
+  for (const chunk of item.chunks || []) {
+    if (Array.isArray(chunk.timeline) && chunk.timeline.length) {
+      for (const p of chunk.timeline) {
+        points.push({
+          valence: Number(p.valence ?? 0),
+          arousal: Number(p.arousal ?? 0),
+          dominant: p.dominant || chunk.dominant || 'calm',
+          timeStart: Number(p.timeStart ?? p.time_start ?? chunk.timeStart ?? 0),
+          timeEnd: Number(p.timeEnd ?? p.time_end ?? chunk.timeEnd ?? 0),
+        });
+      }
+    } else {
+      points.push({
+        valence: Number(chunk.valence ?? 0),
+        arousal: Number(chunk.arousal ?? 0),
+        dominant: chunk.dominant || 'calm',
+        timeStart: Number(chunk.timeStart ?? chunk.time_start ?? 0),
+        timeEnd: Number(chunk.timeEnd ?? chunk.time_end ?? 0),
+      });
+    }
+  }
+  return { points, view: computeVAViewForPoints(points) };
+}
+
+function drawLibraryVAPath(canvas, item) {
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const W = rect.width;
+  const H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#10141d';
+  ctx.fillRect(0, 0, W, H);
+
+  const { points, view } = collectSavedVAPath(item);
+  const project = (v, a) => {
+    const x = clamp01((v - view.minV) / Math.max(0.001, view.maxV - view.minV)) * (W - 22) + 11;
+    const y = (1 - clamp01((a - view.minA) / Math.max(0.001, view.maxA - view.minA))) * (H - 22) + 11;
+    return [x, y];
+  };
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 4; i++) {
+    const x = (W / 4) * i;
+    const y = (H / 4) * i;
+    ctx.moveTo(x, 0); ctx.lineTo(x, H);
+    ctx.moveTo(0, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+
+  if (!points.length) {
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.font = '10px monospace';
+    ctx.fillText('No V/A path saved', 12, H / 2);
+    return;
+  }
+
+  const maxDraw = 360;
+  const stride = Math.max(1, Math.ceil(points.length / maxDraw));
+  const drawn = [];
+  for (let i = 0; i < points.length; i += stride) drawn.push(points[i]);
+  if (drawn[drawn.length - 1] !== points[points.length - 1]) drawn.push(points[points.length - 1]);
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.lineWidth = pass === 0 ? 4 : 1.35;
+    for (let i = 1; i < drawn.length; i++) {
+      const a = drawn[i - 1];
+      const b = drawn[i];
+      const [x0, y0] = project(a.valence, a.arousal);
+      const [x1, y1] = project(b.valence, b.arousal);
+      const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+      grad.addColorStop(0, vaColor(a, pass === 0 ? 0.16 : 0.84));
+      grad.addColorStop(1, vaColor(b, pass === 0 ? 0.16 : 0.84));
+      ctx.strokeStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+  }
+
+}
+
 function renderSavedDetail(item) {
   const summary = item.summary || {};
   const features = summary.average_features || {};
   const stemNames = Object.keys(item.stems || {});
   document.getElementById('savedDetail').innerHTML = `
-    <div class="detail-title">${escapeHtml(item.name)}</div>
+    <div class="detail-hero">
+      <div class="detail-main">
+        <div class="detail-title">${escapeHtml(item.name)}</div>
     <div class="detail-meta">
       ${escapeHtml(item.source_filename || 'saved audio')}<br>
       ${escapeHtml(formatTime(item.duration || 0))} · ${item.num_chunks || 0} chunks · saved ${escapeHtml(item.created_at || '')}
@@ -2427,6 +2686,14 @@ function renderSavedDetail(item) {
         <div class="detail-card-value">${Number(features.brightness || 0).toFixed(2)}</div>
       </div>
     </div>
+      </div>
+      <div class="detail-preview">
+        <div class="library-va-card">
+          <div class="library-va-label">V/A Path</div>
+          <canvas id="libraryVaPreview"></canvas>
+        </div>
+      </div>
+    </div>
     <div class="section-label">Average Mood Distribution</div>
     <div class="modal-mood-bars">${renderModalMoodBars(summary.average_mood)}</div>
     <div class="section-label" style="margin-top:16px">Saved Stems</div>
@@ -2434,6 +2701,7 @@ function renderSavedDetail(item) {
       ${stemNames.length ? stemNames.map(name => `<span class="stem-tag">${escapeHtml(name)}</span>`).join('') : '<span class="saved-item-meta">No stems saved.</span>'}
     </div>
   `;
+  requestAnimationFrame(() => drawLibraryVAPath(document.getElementById('libraryVaPreview'), item));
 }
 
 function normalizeStoredChunk(chunk, fallbackIndex) {
@@ -2505,18 +2773,17 @@ function loadSelectedSavedAnalysis() {
   const statusEl = document.createElement('div');
   statusEl.id = 'oscStatus';
   statusEl.style.cssText = `
-    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
     font-family: 'Space Mono', monospace; font-size: 9px;
     letter-spacing: 0.12em; text-transform: uppercase;
     padding: 4px 10px; border-radius: 20px;
     border: 1px solid rgba(255,255,255,0.08);
     color: rgba(255,255,255,0.25);
     background: rgba(8,10,15,0.85);
-    pointer-events: none; z-index: 999;
+    pointer-events: none;
     transition: color 0.4s, border-color 0.4s;
   `;
   statusEl.textContent = 'osc · disconnected';
-  document.body.appendChild(statusEl);
+  (document.getElementById('oscStatusHost') || document.body).appendChild(statusEl);
 
   function setOscStatus(state) {
     const styles = {
@@ -2892,6 +3159,34 @@ function tdPause() {
 function togglePlay() {
   if (!audioReady) return;
   if (tdPlaying) tdPause(); else tdPlay();
+}
+
+function shouldIgnorePlaybackShortcut(target) {
+  if (!target) return false;
+  const tag = target.tagName?.toLowerCase();
+  if (['input', 'textarea', 'select', 'button'].includes(tag)) return true;
+  if (target.isContentEditable) return true;
+  if (target.closest?.('.modal-backdrop:not(.hidden)')) return true;
+  return false;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' && e.key !== ' ') return;
+  if (e.repeat || !audioReady || shouldIgnorePlaybackShortcut(e.target)) return;
+  e.preventDefault();
+  togglePlay();
+});
+
+function toggleSidebar(force = null) {
+  sidebarCollapsed = force === null ? !sidebarCollapsed : Boolean(force);
+  const content = document.getElementById('content');
+  const button = document.getElementById('btnSidebarToggle');
+  content?.classList.toggle('sidebar-collapsed', sidebarCollapsed);
+  if (button) button.textContent = sidebarCollapsed ? 'Show Panel' : 'Hide Panel';
+  setTimeout(() => {
+    resizeCanvas();
+    scheduleVAPlotDraw();
+  }, 40);
 }
 
 function updateAudioProgress() {
