@@ -78,10 +78,12 @@
     padding-left: 12px;
     margin-left: 2px;
     border-left: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 11px;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: none;
+    text-shadow: 0 0 10px rgba(255,255,255,0.28);
   }
   .logo-dot {
     width: 8px; height: 8px; border-radius: 50%;
@@ -1281,7 +1283,7 @@ async function handleFile(file) {
           document.getElementById('btnSave').style.display = 'block';
           // Ship the MuQ 0.5s timeline to TD; keep 10s chunks for UI summaries.
           window.sendTimelineToOscBridge?.(fineTimeline.length ? fineTimeline : chunks, analysisFilepath, data.stems);
-          setupAudio(file);
+          setupAudio({ name: file.name, audioUrl: `${API_BASE}/audio?ts=${Date.now()}` });
           break;
         }
 
@@ -2103,7 +2105,11 @@ function updateSidebar(chunk) {
   document.getElementById('moodName').textContent = dominant.toUpperCase();
   document.getElementById('moodName').style.color = color;
   const conf = Math.round((mood[dominant] || 0) * 100);
+  const label = chunk.displayLabel || (Number.isFinite(chunk.timeStart) ? fmtTime(chunk.timeStart) : `chunk ${chunk.index}`);
+  document.getElementById('moodConf').textContent = `${conf}% confidence - ${label}`;
   document.getElementById('moodConf').textContent = `${conf}% confidence · chunk ${chunk.index}`;
+
+  document.getElementById('moodConf').textContent = `${conf}% confidence - ${label}`;
 
   // Bars
   Object.keys(MOOD_COLORS).forEach(m => {
@@ -2132,32 +2138,78 @@ function updateSidebar(chunk) {
 // =============================================
 // Timeline
 // =============================================
+function fmtTime(s) {
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+function timelineMarkerPointAt(timeSeconds, fallbackChunk) {
+  const timelineList = activeTimeline?.() || [];
+  const point = timelinePointAtTime?.(timelineList, timeSeconds);
+  const base = point || fallbackChunk;
+  return {
+    ...base,
+    index: fallbackChunk.index,
+    chunkIndex: fallbackChunk.index,
+    timeStart: timeSeconds,
+    timeEnd: Math.min(timeSeconds + TIMELINE_MARKER_SECONDS, fallbackChunk.timeEnd),
+    features: fallbackChunk.features || base.features || {},
+    displayLabel: fmtTime(timeSeconds),
+  };
+}
+
+function seekToTimelineTime(timeSeconds) {
+  const duration = tdDuration || currentDuration || chunks[chunks.length - 1]?.timeEnd || 0;
+  const t = Math.max(0, duration ? Math.min(duration, timeSeconds) : timeSeconds);
+  tdCurrentTime = t;
+
+  if (audioReady) {
+    browserAudio.currentTime = t;
+    syncTdSeek(t);
+    updateAudioProgress();
+  }
+
+  const marker = timelinePointAtTime?.(activeTimeline?.() || [], t) || chunkForTime(t);
+  if (marker) {
+    const markerChunk = chunkForTime(t) || marker;
+    const sidebarPoint = {
+      ...marker,
+      features: markerChunk.features || marker.features || {},
+      displayLabel: fmtTime(t),
+    };
+    updateSidebar(sidebarPoint);
+    updateVAPlot(marker.valence, marker.arousal, marker.dominant);
+    spawnShapesForMood({ ...markerChunk, ...marker });
+  }
+}
+
 function addTimelineItem(chunk) {
-  const { dominant, valence, arousal, timeStart, timeEnd, index } = chunk;
-  const color = MOOD_COLORS[dominant] || '#888';
   const timeline = document.getElementById('timeline');
 
   // Deactivate previous
   timeline.querySelectorAll('.chunk-item.active').forEach(el => el.classList.remove('active'));
 
-  const item = document.createElement('div');
-  item.className = 'chunk-item active';
-  item.dataset.index = index;
-  const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
-  item.innerHTML = `
-    <div class="chunk-time">${fmt(timeStart)}</div>
-    <div class="chunk-mood-dot" style="background:${color}"></div>
-    <div class="chunk-mood-label" style="color:${color}">${dominant}</div>
-    <div class="chunk-va">V:${valence.toFixed(2)} A:${arousal.toFixed(2)}</div>
-  `;
-  item.addEventListener('click', () => {
-    timeline.querySelectorAll('.chunk-item').forEach(el => el.classList.remove('active'));
-    item.classList.add('active');
-    updateSidebar(chunks[index]);
-    updateVAPlot(chunks[index].valence, chunks[index].arousal, chunks[index].dominant);
-    spawnShapesForMood(chunks[index]);
-  });
-  timeline.appendChild(item);
+  for (let markerStart = chunk.timeStart; markerStart < chunk.timeEnd - 0.001; markerStart += TIMELINE_MARKER_SECONDS) {
+    const marker = timelineMarkerPointAt(markerStart, chunk);
+    const { dominant, valence, arousal, timeStart, timeEnd, index } = marker;
+    const color = MOOD_COLORS[dominant] || '#888';
+    const item = document.createElement('div');
+    item.className = 'chunk-item' + (Math.abs(markerStart - chunk.timeStart) < 0.001 ? ' active' : '');
+    item.dataset.index = index;
+    item.dataset.timeStart = String(timeStart);
+    item.dataset.timeEnd = String(timeEnd);
+    item.innerHTML = `
+      <div class="chunk-time">${fmtTime(timeStart)}</div>
+      <div class="chunk-mood-dot" style="background:${color}"></div>
+      <div class="chunk-mood-label" style="color:${color}">${dominant}</div>
+      <div class="chunk-va">V:${valence.toFixed(2)} A:${arousal.toFixed(2)}</div>
+    `;
+    item.addEventListener('click', () => {
+      timeline.querySelectorAll('.chunk-item').forEach(el => el.classList.remove('active'));
+      item.classList.add('active');
+      seekToTimelineTime(timeStart);
+    });
+    timeline.appendChild(item);
+  }
   timeline.scrollTop = timeline.scrollHeight;
 }
 
@@ -2227,10 +2279,9 @@ function setSeparatingOverlay(visible, progress = null, message = null) {
 
 function resetApp(showOverlay = true) {
   stopPlaybackMode?.();
-  if (tdTimerInterval) {
-    clearInterval(tdTimerInterval);
-    tdTimerInterval = null;
-  }
+  browserAudio.pause();
+  browserAudio.removeAttribute('src');
+  browserAudio.load();
   lastPlaybackChunkIdx = -1;
   lastPlaybackFineIdx = -1;
   vaHighlightIdx = -1;
@@ -2250,6 +2301,7 @@ function resetApp(showOverlay = true) {
   tdEndPauseSent = false;
   tdCurrentTime = 0;
   tdDuration = 0;
+  currentAudioUrl = '';
   bgHue = targetHue = 230;
   bgSaturation = targetSaturation = 15;
   bgLightness = targetLightness = 5;
@@ -2751,7 +2803,10 @@ function loadSelectedSavedAnalysis() {
   scheduleVAPlotDraw();
 
   window.sendTimelineToOscBridge?.(fineTimeline.length ? fineTimeline : chunks, analysisFilepath, lastStems);
-  setupAudio({ name: selected.name });
+  setupAudio({
+    name: selected.name,
+    audioUrl: `${API_BASE}/saved-analyses/${encodeURIComponent(selected.id)}/audio`,
+  });
   closeLibraryModal();
   showToast('Loaded saved analysis.');
 }
@@ -2763,7 +2818,7 @@ function loadSelectedSavedAnalysis() {
 // New flow:
 //   - After analysis completes, send one 'timeline' message with all chunks
 //   - For playback, send 'play' / 'pause' / 'seek' only
-//   - TD is the source of truth for playback time (it owns the audio)
+//   - Browser audio is the source of truth; TD follows through OSC
 // =============================================
 (function () {
   let ws = null;
@@ -2909,23 +2964,30 @@ function loadSelectedSavedAnalysis() {
 })();
 
 // =============================================
-// Audio Player (TD owns the audio — frontend is remote only)
-// The frontend runs a local clock purely for progress-bar UI.
+// Audio Player (browser owns the audio; TD follows via OSC)
+// Frontend UI and TD transport both follow browserAudio.currentTime.
 // =============================================
+const browserAudio = new Audio();
+browserAudio.preload = 'auto';
+
 let audioReady = false;
 let tdPlaying = false;
 let tdCurrentTime = 0;
 let tdDuration = 0;
-let tdTimerStart = null;   // performance.now() when play last started
-let tdTimeAtStart = 0;     // tdCurrentTime value when play last started
-let tdTimerInterval = null;
+let currentAudioUrl = '';
 let playbackMode = false;
 let playbackRaf = null;
 let lastPlaybackChunkIdx = -1;
 let lastPlaybackFineIdx = -1;
 let tdEndPauseSent = false;
 
+// Fixed TouchDesigner timing compensation in seconds.
+// Positive values make TD jump ahead of browser audio; negative values make TD lag behind.
+// Example: if TD visuals look 0.20s late, set this to 0.20.
+const TD_FIXED_SYNC_OFFSET_SECONDS = 0.30;
+
 const CHUNK_DUR = 10;
+const TIMELINE_MARKER_SECONDS = 5;
 
 function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -2994,7 +3056,9 @@ function playbackTick() {
 
   const detailTimeline = activeTimeline();
   const detailLast = detailTimeline.length - 1;
-  const t = Math.max(0, Math.min((tdDuration || detailTimeline[detailLast].timeEnd), tdCurrentTime));
+  const t = Math.max(0, Math.min((tdDuration || detailTimeline[detailLast].timeEnd), browserCurrentTime()));
+  tdCurrentTime = t;
+  tdPlaying = audioReady && !browserAudio.paused && !browserAudio.ended;
   const detailIdx = timelineIndexAtTime(detailTimeline, t);
   const i0 = Math.max(0, detailIdx);
   const i1 = Math.min(detailLast, i0 + 1);
@@ -3048,15 +3112,19 @@ function playbackTick() {
     updateBackground(cur);
   }
 
-  // Sync the visible 10s timeline highlight + scroll.
-  const currentChunkIdx = chunkIndexAtTime(t);
-  if (currentChunkIdx !== lastPlaybackChunkIdx) {
-    lastPlaybackChunkIdx = currentChunkIdx;
+  // Sync the visible 5s timeline marker highlight + scroll.
+  const currentMarkerIdx = Math.floor(t / TIMELINE_MARKER_SECONDS);
+  if (currentMarkerIdx !== lastPlaybackChunkIdx) {
+    lastPlaybackChunkIdx = currentMarkerIdx;
     const timeline = document.getElementById('timeline');
+    let activeItem = null;
     timeline.querySelectorAll('.chunk-item').forEach(el => {
-      el.classList.toggle('active', Number(el.dataset.index) === currentChunkIdx);
+      const start = Number(el.dataset.timeStart);
+      const end = Number(el.dataset.timeEnd);
+      const isActive = Number.isFinite(start) && Number.isFinite(end) && t >= start && t < end;
+      el.classList.toggle('active', isActive);
+      if (isActive) activeItem = el;
     });
-    const activeItem = timeline.querySelector('.chunk-item.active');
     if (activeItem) {
       activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
@@ -3085,11 +3153,35 @@ function stopPlaybackMode() {
   playbackRaf = null;
 }
 
-function setupAudio(file) {
+function clampPlaybackTime(timeSeconds) {
+  const duration = tdDuration || browserAudio.duration || 0;
+  const t = Number.isFinite(timeSeconds) ? timeSeconds : 0;
+  return Math.max(0, duration ? Math.min(duration, t) : t);
+}
+
+function browserCurrentTime() {
+  return clampPlaybackTime(browserAudio.currentTime || tdCurrentTime || 0);
+}
+
+function oscPlaybackTime(timeSeconds = browserCurrentTime()) {
+  return clampPlaybackTime(timeSeconds + TD_FIXED_SYNC_OFFSET_SECONDS);
+}
+
+function setPlayButton(isPlaying) {
+  document.getElementById('playBtn').textContent = isPlaying ? '\u275A\u275A' : '\u25B6';
+}
+
+function syncTdSeek(timeSeconds = browserCurrentTime()) {
+  window.sendTransportOSC?.('seek', oscPlaybackTime(timeSeconds));
+}
+
+function setupAudio(source = {}) {
   audioReady = true;
   tdDuration = 0;
+  tdCurrentTime = 0;
+  tdPlaying = false;
+  tdEndPauseSent = false;
 
-  // Derive duration from the finest available timeline.
   if (currentDuration) {
     tdDuration = currentDuration;
   } else if (fineTimeline.length > 0) {
@@ -3098,62 +3190,84 @@ function setupAudio(file) {
     tdDuration = chunks[chunks.length - 1].timeEnd;
   }
 
-  const filename = file.name || currentSourceFilename || 'Current song';
+  currentAudioUrl = source.audioUrl || `${API_BASE}/audio?ts=${Date.now()}`;
+  browserAudio.pause();
+  browserAudio.src = currentAudioUrl;
+  browserAudio.currentTime = 0;
+  browserAudio.load();
+
+  const filename = source.name || currentSourceFilename || 'Current song';
   displaySongTitle(filename);
   document.getElementById('audioBar').style.display = 'flex';
+  setPlayButton(false);
+  updateAudioProgress();
 
   document.getElementById('progressWrap').onclick = (e) => {
     if (!audioReady || !tdDuration) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     tdCurrentTime = pct * tdDuration;
-    if (tdPlaying) { tdTimeAtStart = tdCurrentTime; tdTimerStart = performance.now(); }
-    window.sendTransportOSC?.('seek', tdCurrentTime);
+    browserAudio.currentTime = tdCurrentTime;
+    syncTdSeek(tdCurrentTime);
     updateAudioProgress();
   };
 
-  // Local clock for progress-bar display only. No time sync sent to TD —
-  // TD drives its own visuals off its audio playhead.
-  tdTimerInterval = setInterval(() => {
-    if (tdPlaying) {
-      tdCurrentTime = tdTimeAtStart + (performance.now() - tdTimerStart) / 1000;
-      if (tdDuration && tdCurrentTime >= tdDuration) {
-        tdCurrentTime = tdDuration;
-        tdPlaying = false;
-        if (!tdEndPauseSent) {
-          tdEndPauseSent = true;
-          window.sendTransportOSC?.('pause', tdDuration);
-        }
-        document.getElementById('playBtn').textContent = '▶';
-      }
+  browserAudio.onloadedmetadata = () => {
+    if (Number.isFinite(browserAudio.duration) && browserAudio.duration > 0) {
+      tdDuration = currentDuration || browserAudio.duration;
     }
     updateAudioProgress();
-  }, 100);
+  };
 
-  // Auto-play in TD once the timeline has been sent
-  tdPlay();
+  browserAudio.ontimeupdate = updateAudioProgress;
+  browserAudio.onpause = () => {
+    tdPlaying = false;
+    setPlayButton(false);
+    updateAudioProgress();
+  };
+  browserAudio.onended = () => {
+    tdCurrentTime = tdDuration || browserAudio.duration || browserAudio.currentTime;
+    tdPlaying = false;
+    setPlayButton(false);
+    if (!tdEndPauseSent) {
+      tdEndPauseSent = true;
+      window.sendTransportOSC?.('pause', tdCurrentTime);
+    }
+    updateAudioProgress();
+  };
 
-  // Switch the sidebar from "last analyzed chunk" to playhead-driven flow
   startPlaybackMode();
+  tdPlay();
 }
 
-function tdPlay() {
-  if (tdDuration && tdCurrentTime >= tdDuration - 0.05) {
-    tdCurrentTime = 0;
+async function tdPlay() {
+  if (!audioReady) return;
+  if (tdDuration && browserCurrentTime() >= tdDuration - 0.05) {
+    browserAudio.currentTime = 0;
   }
   tdEndPauseSent = false;
-  tdPlaying = true;
-  tdTimeAtStart = tdCurrentTime;
-  tdTimerStart = performance.now();
-  window.sendTransportOSC?.('play', tdCurrentTime);
-  document.getElementById('playBtn').textContent = '▐▐';
+  try {
+    await browserAudio.play();
+    tdCurrentTime = browserCurrentTime();
+    tdPlaying = true;
+    window.sendTransportOSC?.('play', oscPlaybackTime(tdCurrentTime));
+    setPlayButton(true);
+    updateAudioProgress();
+  } catch (err) {
+    tdPlaying = false;
+    setPlayButton(false);
+    showToast('Press play to start audio.');
+  }
 }
 
 function tdPause() {
+  tdCurrentTime = browserCurrentTime();
+  browserAudio.pause();
   tdPlaying = false;
   tdEndPauseSent = false;
   window.sendTransportOSC?.('pause', tdCurrentTime);
-  document.getElementById('playBtn').textContent = '▶';
+  setPlayButton(false);
+  updateAudioProgress();
 }
 
 function togglePlay() {
@@ -3191,6 +3305,7 @@ function toggleSidebar(force = null) {
 
 function updateAudioProgress() {
   if (!tdDuration) return;
+  tdCurrentTime = browserCurrentTime();
   const pct = Math.min(100, (tdCurrentTime / tdDuration) * 100);
   document.getElementById('audioProgressFill').style.width = pct + '%';
   document.getElementById('audioTime').textContent =

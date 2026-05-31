@@ -562,6 +562,26 @@ def get_saved_analysis(saved_id: str):
     return _metadata_response(saved_id, include_chunks=True)
 
 
+@app.get("/saved-analyses/{saved_id}/audio")
+def get_saved_analysis_audio(saved_id: str):
+    path = _saved_dir(saved_id)
+    metadata_path = os.path.join(path, "metadata.json")
+    if not os.path.exists(metadata_path):
+        raise HTTPException(status_code=404, detail="Saved analysis metadata not found")
+
+    with open(metadata_path, "r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    audio_file = metadata.get("audio_file")
+    if not audio_file:
+        raise HTTPException(status_code=404, detail="Saved audio not found")
+
+    audio_path = _ensure_saved_child_path(os.path.join(path, audio_file))
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail="Saved audio not found")
+    return FileResponse(audio_path, media_type="audio/wav")
+
+
 @app.delete("/saved-analyses/{saved_id}")
 def delete_saved_analysis(saved_id: str):
     path = _ensure_saved_child_path(_saved_dir(saved_id))

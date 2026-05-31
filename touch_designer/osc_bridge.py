@@ -111,8 +111,8 @@ def send_timeline(payload):
 def send_transport(msg_type, value):
     """Transport control: play, pause, seek."""
     if msg_type == "play":
-        osc.send_message("/moodwave/transport", 1)
         osc.send_message("/moodwave/seek", float(value))
+        osc.send_message("/moodwave/transport", 1)
         print(f"[OSC] PLAY  @ {value:.2f}s")
     elif msg_type == "pause":
         osc.send_message("/moodwave/transport", 0)

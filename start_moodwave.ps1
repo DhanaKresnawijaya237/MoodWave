@@ -118,21 +118,6 @@ Write-ColorLine "      Browser launched." "Green"
 Write-ColorLine "      URL: $frontendUrl" "Gray"
 Write-Host ""
 
-# ---------------------------------------------------------------------------
-# 5. TouchDesigner reminder
-# ---------------------------------------------------------------------------
-$toeFiles = Get-ChildItem -Path "$PROJECT_ROOT\touch_designer" -Filter "*.toe" `
-    -ErrorAction SilentlyContinue
-
-if ($toeFiles) {
-    Write-ColorLine "TouchDesigner project(s) found:" "Green"
-    foreach ($f in $toeFiles) {
-        Write-Host "  $($f.FullName)" -ForegroundColor Gray
-    }
-} else {
-    Write-ColorLine "No .toe file found in touch_designer/." "DarkYellow"
-}
-
 Write-ColorLine "Please open your TouchDesigner project manually if needed." "DarkYellow"
 Write-Host ""
 Write-ColorLine "========================================" "Cyan"
