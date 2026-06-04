@@ -1,25 +1,3 @@
-"""
-MoodWave OSC Bridge
-Receives a full mood timeline from the browser via WebSocket and forwards it
-as OSC messages to TouchDesigner.
-
-New flow (pre-loaded, not streaming):
-  1. Frontend sends ONE 'timeline' payload after analysis completes.
-     The payload contains: filepath, duration, chunk_duration, and arrays of
-     valence/arousal/tempo/energy/brightness and per-mood distribution arrays.
-     With MuQ-BiGRU, chunk_duration is usually 0.5s.
-  2. Frontend sends transport messages (play, pause, seek) when the user
-     interacts with the player UI.
-
-Setup:
-  pip install python-osc websockets
-
-Run BEFORE opening the browser:
-  python osc_bridge.py
-
-Then open http://localhost:8000 (or the frontend HTML) and load a song.
-"""
-
 import asyncio
 import json
 import websockets

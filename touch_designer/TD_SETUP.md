@@ -1,72 +1,113 @@
-# MoodWave — TouchDesigner Setup (Pre-loaded Timeline Flow)
+# MoodWave TouchDesigner Setup
 
-## What changed
+This document describes the final TouchDesigner side of MoodWave. The backend analyzes the uploaded song, writes the main WAV and Demucs stem WAV files, the frontend sends one complete timeline payload to the OSC bridge, and TouchDesigner uses that data to drive the audio-reactive visual.
 
-Old flow (removed):
-- Frontend sent one mood chunk every ~100ms during playback
-- Frontend sent `/moodwave/time` pings so TD could keep UI in sync
+## Runtime Pipeline
 
-New flow:
-- Backend analyzes the full song, saves it as a real PCM WAV under
-  `backend/uploads/run_<id>/current.wav`
-- Frontend sends **one timeline payload** to the bridge after analysis finishes
-- Frontend sends **play / pause / seek** only (no time sync)
-- TD owns the audio playhead and reads the timeline arrays itself
-- If Demucs succeeds, six stems are sent as 44.1 kHz stereo PCM WAV files:
-  `vocals`, `drums`, `bass`, `guitar`, `piano`, `other`.
+```text
+Frontend upload
+    -> Backend analysis
+        -> main audio WAV + six Demucs stems + MuQ-BiGRU timeline
+    -> Frontend WebSocket message
+        -> touch_designer/osc_bridge.py
+    -> TouchDesigner OSC inputs
+        -> audio playback, timeline lookup, stem controls, visuals
+    -> td_mjpeg_server.py
+        -> browser preview at http://localhost:9000/video
+```
 
-## OSC addresses TD receives
+TouchDesigner owns playback. The frontend only sends timeline data, play, pause, and seek commands.
 
-| Address                              | Type                | Purpose                                |
-|--------------------------------------|---------------------|----------------------------------------|
-| `/moodwave/filepath`                 | string              | Absolute path to `current.wav`         |
-| `/moodwave/duration`                 | float               | Song duration in seconds               |
-| `/moodwave/chunk_duration`           | float               | Seconds per timeline point (0.5 with MuQ-BiGRU) |
-| `/moodwave/num_chunks`               | int                 | Number of points in the timeline       |
-| `/moodwave/timeline/valence`         | float[]             | Valence per timeline point             |
-| `/moodwave/timeline/arousal`         | float[]             | Arousal per timeline point             |
-| `/moodwave/timeline/tempo`           | float[]             | Tempo per timeline point               |
-| `/moodwave/timeline/energy`          | float[]             | Energy per timeline point              |
-| `/moodwave/timeline/brightness`      | float[]             | Brightness per timeline point          |
-| `/moodwave/timeline/dominant`        | int[]               | Dominant mood index (0..5) per point   |
-| `/moodwave/timeline/mood/{name}`     | float[]             | Probability per point for one mood     |
-| `/moodwave/stems/vocals`             | string              | Absolute path to vocals stem           |
-| `/moodwave/stems/drums`              | string              | Absolute path to drums stem            |
-| `/moodwave/stems/bass`               | string              | Absolute path to bass stem             |
-| `/moodwave/stems/guitar`             | string              | Absolute path to guitar stem           |
-| `/moodwave/stems/piano`              | string              | Absolute path to piano stem            |
-| `/moodwave/stems/other`              | string              | Absolute path to residual other stem   |
-| `/moodwave/transport`                | 0 / 1               | Pause / Play                           |
-| `/moodwave/seek`                     | float               | Seek to time (seconds)                 |
+## Data Sent To TouchDesigner
 
-Mood names: `energetic`, `happy`, `calm`, `romantic`, `sad`, `angry`.
+The OSC bridge receives browser WebSocket messages on `ws://localhost:7011` and forwards OSC to TouchDesigner on UDP port `7000`.
 
----
+| Address | Type | Purpose |
+| --- | --- | --- |
+| `/moodwave/filepath` | string | Absolute path to the main `current.wav` |
+| `/moodwave/duration` | float | Song duration in seconds |
+| `/moodwave/chunk_duration` | float | Timeline step size, normally `0.5` seconds |
+| `/moodwave/num_chunks` | int | Number of timeline points |
+| `/moodwave/stems/vocals` | string | Absolute path to `vocals.wav` |
+| `/moodwave/stems/drums` | string | Absolute path to `drums.wav` |
+| `/moodwave/stems/bass` | string | Absolute path to `bass.wav` |
+| `/moodwave/stems/guitar` | string | Absolute path to `guitar.wav` |
+| `/moodwave/stems/piano` | string | Absolute path to `piano.wav` |
+| `/moodwave/stems/other` | string | Absolute path to `other.wav` |
+| `/moodwave/timeline/valence` | float array | Valence per timeline point |
+| `/moodwave/timeline/arousal` | float array | Arousal per timeline point |
+| `/moodwave/timeline/tempo` | float array | Tempo per timeline point |
+| `/moodwave/timeline/energy` | float array | Energy per timeline point |
+| `/moodwave/timeline/brightness` | float array | Spectral brightness per timeline point |
+| `/moodwave/timeline/dominant` | int array | Dominant mood index per timeline point |
+| `/moodwave/timeline/mood/{name}` | float array | Probability for one mood per timeline point |
+| `/moodwave/transport` | `0` or `1` | Pause or play |
+| `/moodwave/seek` | float | Seek time in seconds |
 
-## Required operators
+Mood names are `energetic`, `happy`, `calm`, `romantic`, `sad`, and `angry`.
 
-### 1. OSC In DAT — `oscin_ctrl`
-- **Network Port:** 7000
-- **Active:** on
-- **Callbacks DAT:** create a Text DAT (e.g. `osc_callbacks`) and point the
-  OSC In DAT's Callbacks parameter at it.
+Demucs outputs six synchronized 44.1 kHz stereo PCM WAV stems: `vocals`, `drums`, `bass`, `guitar`, `piano`, and `other`.
 
-Paste this into `osc_callbacks`:
+## Required Operators
+
+Create these operators in `/project1` unless your network uses another root.
+
+| Operator | Name | Role |
+| --- | --- | --- |
+| OSC In DAT | `oscin_ctrl` | Receives file paths, stems, transport, seek, and metadata |
+| Text DAT | `osc_callbacks` | Callback script for `oscin_ctrl` |
+| OSC In CHOP | `oscin_timeline` | Receives timeline arrays |
+| Audio File In CHOP | `audiofilein1` | Main mixed song playback |
+| Audio File In CHOP | `audiofilein_vocals` | Vocals stem playback |
+| Audio File In CHOP | `audiofilein_drums` | Drums stem playback |
+| Audio File In CHOP | `audiofilein_bass` | Bass stem playback |
+| Audio File In CHOP | `audiofilein_guitar` | Guitar stem playback |
+| Audio File In CHOP | `audiofilein_piano` | Piano stem playback |
+| Audio File In CHOP | `audiofilein_other` | Other stem playback |
+| Timer CHOP | `playhead_timer` | Current playback time for timeline lookup |
+| Script CHOP | `current_mood` | Samples the timeline at the current playhead time |
+
+Set the OSC In DAT `oscin_ctrl`:
+
+- `Network Port`: `7000`
+- `Active`: on
+- `Callbacks DAT`: `osc_callbacks`
+
+Set the OSC In CHOP `oscin_timeline`:
+
+- `Network Port`: `7000`
+- `Address Scope`: `/moodwave/timeline/*`
+
+Set every Audio File In CHOP:
+
+- `File`: blank
+- `Play`: off
+- `Loop`: off
+
+Set the Timer CHOP `playhead_timer`:
+
+- `Play`: off
+- Start at `0`
+- The callback controls reset, seek, play, and duration from OSC
+
+## OSC Callback Script
+
+Paste this into the Text DAT named `osc_callbacks`.
 
 ```python
-STEM_AUDIO_OPS = [
-    'audiofilein_vocals',
-    'audiofilein_drums',
-    'audiofilein_bass',
-    'audiofilein_guitar',
-    'audiofilein_piano',
-    'audiofilein_other',
-]
+STEMS = ('vocals', 'drums', 'bass', 'guitar', 'piano', 'other')
+STEM_AUDIO_OPS = ['audiofilein_' + name for name in STEMS]
 
-def _audio_ops():
-    ops = [op('audiofilein1')]
-    ops.extend(op(name) for name in STEM_AUDIO_OPS)
-    return [audio for audio in ops if audio is not None]
+
+def _all_audio_ops():
+    names = ['audiofilein1'] + STEM_AUDIO_OPS
+    result = []
+    for name in names:
+        audio = op(name)
+        if audio is not None:
+            result.append(audio)
+    return result
+
 
 def _load_audio(audio, filepath):
     audio.par.file.val = filepath
@@ -75,90 +116,194 @@ def _load_audio(audio, filepath):
     audio.par.cuepoint.val = 0
     audio.par.cuepulse.pulse()
 
+
+def _reset_timer(timer):
+    if timer is None:
+        return
+    if hasattr(timer.par, 'initialize'):
+        timer.par.initialize.pulse()
+    if hasattr(timer.par, 'start'):
+        timer.par.start.pulse()
+    if hasattr(timer.par, 'play'):
+        timer.par.play = 0
+
+
+def _seek_timer(timer, seconds):
+    if timer is None:
+        return
+    if hasattr(timer.par, 'cuepoint'):
+        timer.par.cuepoint.val = seconds
+    if hasattr(timer.par, 'cuepulse'):
+        timer.par.cuepulse.pulse()
+
+
+def _set_timer_duration(timer, seconds):
+    if timer is None:
+        return
+    for par_name in ('length', 'duration'):
+        if hasattr(timer.par, par_name):
+            getattr(timer.par, par_name).val = seconds
+            return
+
+
 def onReceiveOSC(dat, rowIndex, message, bytes, timeStamp, address, args, peer):
-    audio = op('audiofilein1')
+    timer = op('playhead_timer')
 
     if address == '/moodwave/filepath' and len(args) > 0:
         filepath = args[0]
-        print(f'[MoodWave] Loading file: {filepath}')
+        audio = op('audiofilein1')
         if audio:
+            print('[MoodWave] Loading file:', filepath)
             _load_audio(audio, filepath)
+        _reset_timer(timer)
 
-    elif address == '/moodwave/transport' and len(args) > 0:
-        play = int(args[0])
-        for audio in _audio_ops():
-            audio.par.play = play
-        print(f"[MoodWave] Transport: {'play' if play else 'pause'}")
+    elif address == '/moodwave/duration' and len(args) > 0:
+        duration = float(args[0])
+        dat.parent().store('moodwave_duration', duration)
+        _set_timer_duration(timer, duration)
 
-    elif address == '/moodwave/seek' and len(args) > 0:
-        t = float(args[0])
-        for audio in _audio_ops():
-            audio.par.cuepoint.val = t
-            audio.par.cuepulse.pulse()
-        print(f'[MoodWave] Seek -> {t:.2f}s')
+    elif address == '/moodwave/chunk_duration' and len(args) > 0:
+        dat.parent().store('moodwave_chunk_duration', float(args[0]))
+
+    elif address == '/moodwave/num_chunks' and len(args) > 0:
+        dat.parent().store('moodwave_num_chunks', int(args[0]))
 
     elif address.startswith('/moodwave/stems/') and len(args) > 0:
         stem_name = address.split('/')[-1]
-        stem = op(f'audiofilein_{stem_name}')
+        stem = op('audiofilein_' + stem_name)
         if stem:
-            print(f'[MoodWave] Loading stem {stem_name}: {args[0]}')
+            print('[MoodWave] Loading stem {}: {}'.format(stem_name, args[0]))
             _load_audio(stem, args[0])
+
+    elif address == '/moodwave/seek' and len(args) > 0:
+        seconds = float(args[0])
+        for audio in _all_audio_ops():
+            audio.par.cuepoint.val = seconds
+            audio.par.cuepulse.pulse()
+        _seek_timer(timer, seconds)
+        print('[MoodWave] Seek -> {:.2f}s'.format(seconds))
+
+    elif address == '/moodwave/transport' and len(args) > 0:
+        play = int(args[0])
+        for audio in _all_audio_ops():
+            audio.par.play = play
+        if timer is not None and hasattr(timer.par, 'play'):
+            timer.par.play = play
+        print('[MoodWave] Transport:', 'play' if play else 'pause')
 ```
 
-### 2. OSC In CHOP — `oscin_timeline`
-- **Network Port:** 7000 (same port is fine — TD splits between DAT and CHOP)
-- **Address Scope:** `/moodwave/timeline/*`
-- This CHOP will expose multi-sample channels, one per address. Each channel's
-  sample count = number of chunks. Channel names appear as
-  `moodwave/timeline/valence`, etc.
+## Current Mood Script CHOP
 
-> If you want to keep DAT and CHOP cleanly separated, use two OSC In operators
-> on the same port — TD allows multiple receivers to listen to the same port.
+Create a Script CHOP named `current_mood`. It samples the timeline arrays using the current timer position and outputs one-sample control channels for the active moment in the song.
 
-### 3. Audio File In CHOP — `audiofilein1`
-- **File:** (leave blank — it gets set by OSC)
-- **Play:** off by default (transport OSC flips it on)
-- **Loop:** off
-- **Cue:** used by the seek handler
+```python
+import colorsys
 
-> **Stem support:** If Demucs separation succeeds, six additional
-> `/moodwave/stems/*` paths are sent. You can create extra Audio File In CHOPs
-> named exactly:
->
-> - `audiofilein_vocals`
-> - `audiofilein_drums`
-> - `audiofilein_bass`
-> - `audiofilein_guitar`
-> - `audiofilein_piano`
-> - `audiofilein_other`
->
-> The callback above auto-loads any `/moodwave/stems/{name}` path into
-> `audiofilein_{name}` and keeps all stem players synced with the main audio.
-> Set **Loop** off on each stem Audio File In CHOP too. The callback also tries
-> to turn `par.loop` off when a file is loaded.
-> If you prefer explicit branches, the equivalent callback checks are:
->
-> ```python
-> elif address == '/moodwave/stems/vocals' and len(args) > 0:
->     op('audiofilein_vocals').par.file.val = args[0]
-> elif address == '/moodwave/stems/drums' and len(args) > 0:
->     op('audiofilein_drums').par.file.val = args[0]
-> elif address == '/moodwave/stems/bass' and len(args) > 0:
->     op('audiofilein_bass').par.file.val = args[0]
-> elif address == '/moodwave/stems/guitar' and len(args) > 0:
->     op('audiofilein_guitar').par.file.val = args[0]
-> elif address == '/moodwave/stems/piano' and len(args) > 0:
->     op('audiofilein_piano').par.file.val = args[0]
-> elif address == '/moodwave/stems/other' and len(args) > 0:
->     op('audiofilein_other').par.file.val = args[0]
-> ```
->
-> Wire all Audio File In CHOPs to the same transport/seek logic (or group them
-> in a Container COMP) so they stay in sync.
+MOODS = ('energetic', 'happy', 'calm', 'romantic', 'sad', 'angry')
+FEATURES = ('tempo', 'energy', 'brightness')
 
-### 3b. Stem control CHOPs for visuals
 
-For instrument-reactive visuals, create a small control branch per stem:
+def _chan(chop, name):
+    if chop is None:
+        return None
+    try:
+        return chop[name]
+    except Exception:
+        return None
+
+
+def _sample(ch, idx, default=0.0):
+    if ch is None or ch.numSamples == 0:
+        return default
+    idx = max(0, min(idx, ch.numSamples - 1))
+    return float(ch[idx])
+
+
+def _append(scriptOp, name, value):
+    c = scriptOp.appendChan(name)
+    c[0] = float(value)
+
+
+def _current_seconds():
+    timer = op('playhead_timer')
+    for name in ('timer_seconds', 'seconds', 'time', 't'):
+        ch = _chan(timer, name)
+        if ch is not None:
+            return float(ch[0])
+
+    audio = op('audiofilein1')
+    for name in ('t', 'time', 'seconds'):
+        ch = _chan(audio, name)
+        if ch is not None:
+            return float(ch[0])
+
+    return 0.0
+
+
+def onCook(scriptOp):
+    scriptOp.clear()
+    scriptOp.numSamples = 1
+
+    timeline = op('oscin_timeline')
+    chunk_dur = float(parent().fetch('moodwave_chunk_duration', 0.5))
+    chunk_dur = max(chunk_dur, 0.001)
+    chunk_idx = int(_current_seconds() // chunk_dur)
+
+    val_ch = _chan(timeline, 'moodwave/timeline/valence')
+    aro_ch = _chan(timeline, 'moodwave/timeline/arousal')
+
+    valence = _sample(val_ch, chunk_idx, 0.0)
+    arousal = _sample(aro_ch, chunk_idx, 0.0)
+
+    _append(scriptOp, 'valence', valence)
+    _append(scriptOp, 'arousal', arousal)
+
+    for feature in FEATURES:
+        ch = _chan(timeline, 'moodwave/timeline/' + feature)
+        _append(scriptOp, feature, _sample(ch, chunk_idx, 0.0))
+
+    mood_values = []
+    for mood in MOODS:
+        ch = _chan(timeline, 'moodwave/timeline/mood/' + mood)
+        value = _sample(ch, chunk_idx, 0.0)
+        mood_values.append(value)
+        _append(scriptOp, mood, value)
+
+    if sum(mood_values) > 0:
+        dominant = max(range(len(mood_values)), key=lambda i: mood_values[i])
+        confidence = mood_values[dominant]
+    else:
+        dominant = int(_sample(_chan(timeline, 'moodwave/timeline/dominant'), chunk_idx, 0.0))
+        confidence = 0.0
+
+    _append(scriptOp, 'dominant', dominant)
+    _append(scriptOp, 'confidence', confidence)
+
+    # Compact valence/arousal color helper.
+    # Use this for quick color links, or use the mood channels for richer ramp blends.
+    u = max(0.0, min(1.0, (valence + 1.0) * 0.5))
+    a = max(0.0, min(1.0, (arousal + 1.0) * 0.5))
+    hue = (220.0 + u * (55.0 - 220.0)) / 360.0
+    sat = 0.35 + a * 0.45
+    bri = 0.45 + (abs(valence) + abs(arousal)) * 0.20
+    r, g, b = colorsys.hsv_to_rgb(hue, sat, min(0.85, bri))
+
+    _append(scriptOp, 'r', r)
+    _append(scriptOp, 'g', g)
+    _append(scriptOp, 'b', b)
+```
+
+Useful channels from `current_mood`:
+
+- `valence`, `arousal`
+- `tempo`, `energy`, `brightness`
+- `energetic`, `happy`, `calm`, `romantic`, `sad`, `angry`
+- `dominant`, `confidence`
+- `r`, `g`, `b`
+
+## Stem Control Branches
+
+For each stem, create a small CHOP chain that turns the audio into stable control values:
 
 ```text
 audiofilein_vocals -> analyze_vocals -> math_vocals -> lag_vocals -> null_vocals_ctrl
@@ -169,125 +314,161 @@ audiofilein_piano  -> analyze_piano  -> math_piano  -> lag_piano  -> null_piano_
 audiofilein_other  -> analyze_other  -> math_other  -> lag_other  -> null_other_ctrl
 ```
 
-Recommended first mapping for the flower design:
+Recommended visual mapping for the flower network:
 
-| Stem | Visual control idea |
-|------|---------------------|
-| vocals | flower center glow, petal opening, emotional pulse |
-| drums | particle bursts, sharp bloom hits, quick camera/light pulses |
-| bass | whole flower scale, low-frequency breathing, core expansion |
-| guitar | particle swirl, noise turbulence, orbit speed |
-| piano | petal shimmer, sparkle intensity, fine twist amount |
-| other | background atmosphere, slow field motion, residual texture |
+| Stem | Best visual use |
+| --- | --- |
+| `vocals` | Flower center glow, petal opening, emotional pulse |
+| `drums` | Particle bursts, sharp bloom hits, quick light flashes |
+| `bass` | Whole flower scale, low-frequency breathing, core expansion |
+| `guitar` | Particle swirl, noise turbulence, orbit speed |
+| `piano` | Petal shimmer, sparkle amount, gentle twist |
+| `other` | Background atmosphere, slow field motion, residual texture |
 
-Example parameter expressions:
+Example expressions:
 
 ```python
-# flower scale / bass pulse
+# bass-driven flower scale
 1 + op('null_bass_ctrl')[0] * 0.35
 
-# particle birth / drum hits
+# drum-driven particle bursts
 20 + op('null_drums_ctrl')[0] * 120
 
-# petal twist / piano shimmer
-op('current_mood')['arousal'][0] * 0.8 + op('null_piano_ctrl')[0] * 1.2
+# piano shimmer with arousal influence
+op('current_mood')['arousal'][0] * 0.5 + op('null_piano_ctrl')[0] * 0.8
 
-# particle turbulence / guitar motion
+# guitar turbulence
 0.2 + op('null_guitar_ctrl')[0] * 1.5
 ```
 
-### 4. Current-chunk lookup — Script CHOP `current_mood`
-Create a Script CHOP, paste into its `onCook`:
+Use Lag CHOPs aggressively on continuous controls. Short lag works for drums; longer lag works for twist, color, bloom, camera, and whole-shape scale.
+
+## Color Pipeline
+
+The final color setup should use both valence/arousal and mood probabilities:
+
+```text
+current_mood
+    -> optional Lag CHOP for smoother mood/color changes
+    -> ramp color controls
+    -> Ramp TOP
+    -> Lookup TOP
+    -> HSV Adjust / Level / Luma Blur
+    -> output TOP
+```
+
+Practical usage:
+
+- Use `valence` and `arousal` to choose the overall color region.
+- Use mood probability channels to weight mood palettes, especially when two moods are mixed.
+- Lag the mood/color control channels so dominant mood changes do not jump visually.
+- Keep Ramp TOP edge keys darker and softer, then let the center keys carry the mood color.
+- Use Level TOP brightness and bloom controls with restrained values so the render keeps detail.
+
+## MJPEG Browser Preview
+
+Use `touch_designer/td_mjpeg_server.py` inside TouchDesigner.
+
+1. Create a Text DAT, for example `td_mjpeg_server`.
+2. Paste the server script into it.
+3. Set `TOP_PATH` in the script to the final output TOP, usually `/project1/out1`.
+4. Create an Execute DAT.
+5. Enable the `Start` callback and run:
 
 ```python
-import colorsys
-
-def onCook(scriptOp):
-    scriptOp.clear()
-    scriptOp.numSamples = 1
-
-    audio    = op('audiofilein1')
-    timeline = op('oscin_timeline')
-
-    # Current audio time in seconds
-    t = float(audio['t'][0]) if audio is not None else 0.0
-
-    # MuQ-BiGRU sends a fine 0.5s timeline. If you intentionally send
-    # coarser timelines later, change this to match /moodwave/chunk_duration.
-    chunk_dur = 0.5
-    chunk_idx = int(t // chunk_dur)
-
-    val_ch = timeline['moodwave/timeline/valence']
-    aro_ch = timeline['moodwave/timeline/arousal']
-
-    # Bail out cleanly until the timeline has arrived
-    if val_ch is None or aro_ch is None or val_ch.numSamples == 0:
-        scriptOp.appendChan('valence')[0] = 0
-        scriptOp.appendChan('arousal')[0] = 0
-        scriptOp.appendChan('r')[0] = 0.5
-        scriptOp.appendChan('g')[0] = 0.5
-        scriptOp.appendChan('b')[0] = 0.5
-        return
-
-    n = val_ch.numSamples
-    chunk_idx = max(0, min(chunk_idx, n - 1))
-
-    valence = float(val_ch[chunk_idx])
-    arousal = float(aro_ch[chunk_idx])
-
-    # HSV -> RGB mapping (same as before)
-    u = (valence + 1) / 2
-    hue = (220 + u * (55 - 220)) / 360
-    sat = 0.45 + ((arousal + 1) / 2) * 0.55
-    bri = 0.65 + ((abs(valence) + abs(arousal)) / 2) * 0.35
-    r, g, b = colorsys.hsv_to_rgb(hue, sat, bri)
-
-    scriptOp.appendChan('valence')[0] = valence
-    scriptOp.appendChan('arousal')[0] = arousal
-    scriptOp.appendChan('r')[0] = r
-    scriptOp.appendChan('g')[0] = g
-    scriptOp.appendChan('b')[0] = b
+exec(op('td_mjpeg_server').text)
 ```
 
-This CHOP now outputs `valence`, `arousal`, `r`, `g`, `b` for the **currently
-playing 0.5s timeline point**. Reference any of these from the rest of your visuals.
+6. Enable the `Frame Start` callback and run:
 
-### 5. MJPEG server (unchanged)
-Keep using `td_mjpeg_server.py`. Make sure:
-- `TOP_PATH` in that script still points at your output TOP
-- Execute DAT is set up to call `update_frame()` on `onFrameStart`
-
----
-
-## Minimum network sketch
-
-```
-OSC In DAT (oscin_ctrl) -> osc_callbacks Text DAT
-                              |
-                              v
-                         Audio File In CHOP (audiofilein1)
-                              |
-                              | t (playhead)
-                              v
-OSC In CHOP (oscin_timeline) -> Script CHOP (current_mood) -> your visuals
-                              (timeline arrays)
+```python
+op('td_mjpeg_server').module.update_frame()
 ```
 
----
+The frontend reads the TouchDesigner preview from:
 
-## Startup order
+```text
+http://localhost:9000/video
+```
 
-1. `python osc_bridge.py`            (in `touch_designer/`)
-2. `uvicorn main:app --reload --port 8000`  (in `backend/`)
-3. Open the TouchDesigner project — watch Textport for
-   `[MoodWave] MJPEG server running...`
-4. Open `frontend/moodwave.html` in a browser and drop an audio file in
+You can check server health in the browser:
 
-On upload, Textport should show:
-- `[MoodWave] Loading file: C:/.../uploads/run_<id>/current.wav`
-- `[MoodWave] Loading stem drums: C:/.../uploads/run_<id>/stems/drums.wav`
-- `[MoodWave] Loading stem bass: C:/.../uploads/run_<id>/stems/bass.wav`
-- `[MoodWave] Transport: play`
+```text
+http://localhost:9000/health
+```
 
-Once the timeline payload has been received, the `current_mood` Script CHOP
-will start tracking the audio's playhead with no extra plumbing.
+## Startup Order
+
+Recommended launcher flow:
+
+1. From the project root, run the MoodWave launcher:
+
+```powershell
+.\start_moodwave.ps1
+```
+
+You can also double-click:
+
+```text
+start_moodwave.bat
+```
+
+The launcher starts the bridge, starts the backend, and opens the frontend at:
+
+```text
+http://127.0.0.1:8000/
+```
+
+2. Open the TouchDesigner project file:
+
+```text
+C:\Users\dhana\SUSTech\Semester_6\CS330_Multimedia_Information_Processing\testing\touch_designer\Ghost_Flower.95.toe
+```
+
+3. Confirm the MJPEG server prints that it is running on port `9000`.
+
+4. Upload a song or load a saved analysis from the library.
+
+Manual equivalent:
+
+1. Start the OSC bridge:
+
+```powershell
+cd touch_designer
+python osc_bridge.py
+```
+
+2. Start the backend:
+
+```powershell
+cd backend
+uvicorn main:app --reload --port 8000
+```
+
+3. Open `touch_designer\Ghost_Flower.95.toe`.
+
+4. Confirm the MJPEG server prints that it is running on port `9000`.
+
+5. Open the frontend:
+
+```text
+http://127.0.0.1:8000/
+```
+
+6. Upload a song or load a saved analysis from the library.
+
+Expected TouchDesigner Textport messages:
+
+```text
+[MoodWave] Loading file: C:/.../current.wav
+[MoodWave] Loading stem vocals: C:/.../vocals.wav
+[MoodWave] Loading stem drums: C:/.../drums.wav
+[MoodWave] Loading stem bass: C:/.../bass.wav
+[MoodWave] Loading stem guitar: C:/.../guitar.wav
+[MoodWave] Loading stem piano: C:/.../piano.wav
+[MoodWave] Loading stem other: C:/.../other.wav
+[MoodWave] Seek -> 0.00s
+[MoodWave] Transport: play
+```
+
+When the timeline arrives, `oscin_timeline` should contain multi-sample channels and `current_mood` should output one-sample control values for the currently playing moment.
