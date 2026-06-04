@@ -1,16 +1,3 @@
-"""OpenL3 feature extraction for DEAM frame-level VA regression.
-
-Matches the paper setup:
-- 512-dim music-domain embeddings
-- hop_size = 0.5 s (aligned to DEAM 2 Hz annotations)
-- audio sampled at 44.1 kHz
-
-Optimizations:
-- Uses julian sampler (GPU-native, ~1.6× faster than resampy)
-- Chunked incremental caching: saves partial results every 200 songs
-  so extraction can resume after interruption.
-"""
-
 import glob
 import os
 

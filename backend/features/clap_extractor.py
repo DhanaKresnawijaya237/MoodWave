@@ -1,12 +1,3 @@
-"""CLAP feature extraction for DEAM dynamic window-level VA regression.
-
-Supports two backends (tries msclap first, falls back to transformers):
-    pip install msclap transformers
-
-CLAP normally produces one embedding for an audio clip. Here each clip is the
-0.5s audio window aligned with a DEAM dynamic valence/arousal annotation.
-"""
-
 import glob
 import os
 

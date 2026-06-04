@@ -1,13 +1,3 @@
-"""Unified training entrypoint for MoodWave experiments.
-
-Examples
---------
-python train.py --encoder mel --classifier cnn-bigru --split strict
-python train.py --encoder openl3 --classifier mlp --split paper --eval-only
-python train.py --encoder muq --classifier bigru --epochs 80
-python train.py --encoder clap --classifier mlp --rebuild-cache
-"""
-
 import argparse
 import os
 from dataclasses import dataclass

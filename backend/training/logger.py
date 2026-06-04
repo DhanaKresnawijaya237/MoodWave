@@ -1,5 +1,3 @@
-"""Per-epoch metrics logging + plotting for training scripts."""
-
 import csv
 import os
 
