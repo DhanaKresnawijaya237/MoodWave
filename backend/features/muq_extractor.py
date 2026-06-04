@@ -1,14 +1,3 @@
-"""MuQ feature extraction for DEAM dynamic window-level VA regression.
-
-Requires:
-    pip install muq transformers
-
-MuQ expects 24 kHz mono audio and outputs frame-level Conformer features.
-DEAM dynamic annotations are sampled every 0.5 seconds, starting at 15s in
-the original song. The audio clips used here are treated as excerpts, so
-annotation timestamps are shifted by 15s and aligned to excerpt time.
-"""
-
 import gc
 import glob
 import os

@@ -1,5 +1,3 @@
-"""Lion Swarm Optimization (LSO) hyperparameter tuning."""
-
 import numpy as np
 import torch
 import torch.nn as nn
